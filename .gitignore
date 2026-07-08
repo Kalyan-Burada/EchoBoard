@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+frames/
+storage/
+dashboard/node_modules/
+dashboard/dist/
+.env
