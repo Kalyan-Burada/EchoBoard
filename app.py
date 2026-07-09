@@ -16,6 +16,7 @@ Lets a user:
 import os
 import shutil
 import tempfile
+import threading
 import streamlit as st
 
 import database as db
@@ -38,25 +39,17 @@ tab_upload, tab_library, tab_search = st.tabs(
 # ---------------------------------------------------------------------------
 def _process_and_store(video_path, display_name, sample_every_n_frames,
                        motion_threshold, stable_frames_required,
-                       new_content_threshold):
+                       new_content_threshold, download_thread=None,
+                       stop_event=None):
     """Run the keyframe extractor, insert into MongoDB, clean up local JPGs."""
-    result = process_video(
-        video_path,
-        video_id=None,
-        sample_every_n_frames=sample_every_n_frames,
-        motion_threshold=motion_threshold,
-        stable_frames_required=stable_frames_required,
-        new_content_threshold=new_content_threshold,
-    )
-
     video_id = db.insert_video(
         filename=display_name,
-        duration_sec=result["duration_sec"],
-        total_frames=result["total_frames"],
-        fps=result["fps"],
+        duration_sec=0,
+        total_frames=0,
+        fps=0,
     )
 
-    for kf in result["keyframes"]:
+    def on_keyframe(kf):
         db.insert_keyframe(
             video_id=video_id,
             frame_number=kf["frame_number"],
@@ -68,7 +61,27 @@ def _process_and_store(video_path, display_name, sample_every_n_frames,
         if os.path.exists(kf["image_path"]):
             os.unlink(kf["image_path"])
 
+    result = process_video(
+        video_path,
+        video_id=video_id,
+        sample_every_n_frames=sample_every_n_frames,
+        motion_threshold=motion_threshold,
+        stable_frames_required=stable_frames_required,
+        new_content_threshold=new_content_threshold,
+        on_keyframe=on_keyframe,
+        download_thread=download_thread,
+        stop_event=stop_event,
+    )
+
+    db.update_video(
+        video_id=video_id,
+        duration_sec=result["duration_sec"],
+        total_frames=result["total_frames"],
+        fps=result["fps"],
+    )
+
     return video_id, result
+
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +213,20 @@ with tab_upload:
             content_t = st.slider("New-content sensitivity (%)",
                                   0.01, 2.0, 0.05, step=0.01, key="u_content")
 
-        if video_url and st.button("Download & Process", type="primary"):
+        # Guard: if a download is already running, show its status instead
+        dl_running = st.session_state.get("dl_thread") and st.session_state["dl_thread"].is_alive()
+
+        if dl_running:
+            kf_count = st.session_state.get("dl_kf_count", 0)
+            st.info(f"⏳ Processing in background… **{kf_count} keyframes** captured so far.")
+            if st.button("⏹ Stop & Finish", type="secondary"):
+                st.session_state.get("dl_stop_event", threading.Event()).set()
+                st.session_state["dl_thread"].join(timeout=5.0)
+                st.session_state["dl_thread"] = None
+                st.session_state["dl_stop_event"] = None
+                st.session_state["dl_tmp_dir"] = None
+                st.rerun()
+        elif video_url and st.button("Download & Process", type="primary"):
             try:
                 import yt_dlp
             except ImportError:
@@ -211,47 +237,88 @@ with tab_upload:
                 st.stop()
 
             tmp_dir = tempfile.mkdtemp()
+            stop_event = threading.Event()
+            dl_thread = None
+
             try:
-                # --- Download ---
-                with st.spinner("⬇️ Downloading video…"):
+                # --- Fetch Info ---
+                with st.spinner("⬇️ Fetching video info…"):
                     ydl_opts = {
                         "format": (
                             "best[height<=720][ext=mp4]/"
                             "best[height<=720]/best"
                         ),
-                        "outtmpl": os.path.join(
-                            tmp_dir, "%(title).80s.%(ext)s"
-                        ),
                         "quiet": True,
                         "no_warnings": True,
+                        "noplaylist": True,
                     }
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(video_url, download=True)
+                        info = ydl.extract_info(video_url, download=False)
                         video_title = info.get("title", "Downloaded Video")
-                        tmp_path = ydl.prepare_filename(info)
 
-                st.info(f"Downloaded: **{video_title}**")
+                st.info(f"Processing stream: **{video_title}**")
 
-                # --- Process keyframes ---
-                with st.spinner("🔍 Extracting keyframes…"):
+                # --- Start Background Download ---
+                tmp_path = os.path.join(tmp_dir, "video.mkv")
+
+                def run_download(_stop=stop_event, _url=video_url, _path=tmp_path):
+                    dl_opts = {
+                        "format": "bestvideo[height<=720]/best[height<=720]/best",
+                        "outtmpl": _path,
+                        "merge_output_format": "mkv",
+                        "nopart": True,   # Write directly, no .part rename (avoids WinError 32)
+                        "quiet": True,
+                        "no_warnings": True,
+                        "noplaylist": True,
+                    }
+                    try:
+                        with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                            ydl.download([_url])
+                    except Exception:
+                        pass  # Swallow errors from stop/interrupt
+
+                dl_thread = threading.Thread(target=run_download, daemon=True)
+                dl_thread.start()
+
+                # Store in session_state so Streamlit reruns don't kill it
+                st.session_state["dl_thread"] = dl_thread
+                st.session_state["dl_stop_event"] = stop_event
+                st.session_state["dl_tmp_dir"] = tmp_dir
+                st.session_state["dl_kf_count"] = 0
+
+                # --- Process keyframes progressively ---
+                with st.spinner("🔍 Streaming video and extracting keyframes in real-time…"):
                     video_id, result = _process_and_store(
                         tmp_path, video_title,
                         sample_n, motion_t, stable_n, content_t,
+                        download_thread=dl_thread,
+                        stop_event=stop_event,
                     )
+                    st.session_state["dl_kf_count"] = len(result["keyframes"])
+
+                # Wait for downloader to finish cleanly
+                if dl_thread.is_alive():
+                    dl_thread.join(timeout=5.0)
 
                 st.success(
                     f"Done! Captured **{len(result['keyframes'])} keyframes** "
                     f"from *{video_title}* ({result['duration_sec']:.1f}s)."
                 )
                 st.session_state["last_video_id"] = video_id
+                st.session_state["dl_thread"] = None
+                st.session_state["dl_tmp_dir"] = None
 
-            except yt_dlp.utils.DownloadError as e:
-                st.error(f"Download failed: {e}")
             except Exception as e:
                 st.error(f"Error: {e}")
+                if dl_thread and dl_thread.is_alive():
+                    stop_event.set()
+                    dl_thread.join(timeout=3.0)
             finally:
-                # Clean up entire temp directory
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+                # Clean up only if processing finished (not still downloading)
+                if not (st.session_state.get("dl_thread") and st.session_state["dl_thread"].is_alive()):
+                    st.session_state["dl_thread"] = None
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+
 
 
 # ---------------------------------------------------------------------------
