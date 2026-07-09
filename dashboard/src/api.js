@@ -5,6 +5,7 @@ export const api = {
   getVideos: () => fetch(`${BASE}/api/videos`).then(r => r.json()),
   getKeyframes: (videoId) => fetch(`${BASE}/api/videos/${videoId}/keyframes`).then(r => r.json()),
   deleteVideo: (videoId) => fetch(`${BASE}/api/videos/${videoId}`, { method: "DELETE" }).then(r => r.json()),
+  stopVideo: (videoId) => fetch(`${BASE}/api/videos/${videoId}/stop`, { method: "POST" }).then(r => r.json()),
   imageUrl: (kfId) => `${BASE}/api/keyframes/${kfId}/image`,
   videoZipUrl: (videoId) => `${BASE}/api/videos/${videoId}/download`,
   datasetZipUrl: () => `${BASE}/api/download/dataset`,
