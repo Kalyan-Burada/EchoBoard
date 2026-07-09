@@ -27,6 +27,37 @@ export default function Library({ refreshKey }) {
     }).catch(() => setLoading(false));
   }, [refreshKey]);
 
+  useEffect(() => {
+    const isProcessing = videos.some(v => v.processing);
+    if (!isProcessing) return;
+
+    const interval = setInterval(() => {
+      api.getVideos().then(vs => {
+        setVideos(vs);
+        
+        const curVideo = vs.find(v => v.id === selected);
+        if (curVideo && (curVideo.processing || keyframes.length === 0)) {
+          api.getKeyframes(selected).then(kfs => {
+            if (kfs.length !== keyframes.length) {
+              setKeyframes(kfs);
+            }
+          });
+        }
+      });
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [videos, selected, keyframes]);
+
+  async function stopProcessing(id) {
+    try {
+      await api.stopVideo(id);
+      api.getVideos().then(setVideos);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   async function handleDelete(id) {
     await api.deleteVideo(id);
     const updated = videos.filter(v => v.id !== id);
@@ -46,6 +77,7 @@ export default function Library({ refreshKey }) {
   function downloadAll() { window.open(api.datasetZipUrl(), "_blank"); }
 
   const kf = keyframes[idx];
+  const selectedVideo = videos.find(v => v.id === selected);
 
   return (
     <div style={styles.wrap}>
@@ -55,7 +87,13 @@ export default function Library({ refreshKey }) {
           <div key={v.id} onClick={() => selectVideo(v.id)}
             style={{ ...styles.videoItem, ...(selected === v.id ? styles.activeItem : {}) }}>
             <span style={styles.videoName}>{v.filename}</span>
-            <span style={styles.meta}>{v.duration_sec.toFixed(1)}s · {v.uploaded_at.slice(0, 10)}</span>
+            <span style={styles.meta}>
+              {v.processing ? (
+                <span style={{ color: "#38bdf8", fontWeight: 600 }}>⏳ Processing...</span>
+              ) : (
+                `${v.duration_sec.toFixed(1)}s · ${v.uploaded_at.slice(0, 10)}`
+              )}
+            </span>
             <button onClick={e => { e.stopPropagation(); handleDelete(v.id); }} style={styles.delBtn}>🗑</button>
           </div>
         ))}
@@ -66,7 +104,20 @@ export default function Library({ refreshKey }) {
         <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
           <button onClick={downloadAll} style={styles.dlBtn}>⬇️ Download Full Dataset (ZIP)</button>
         </div>
-        {keyframes.length === 0 && <p style={{ color: "#94a3b8" }}>No keyframes.</p>}
+        {keyframes.length === 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start" }}>
+            <p style={{ color: selectedVideo?.processing ? "#38bdf8" : "#94a3b8", margin: 0 }}>
+              {selectedVideo?.processing
+                ? "⏳ Downloading and processing video... Keyframes will appear here automatically."
+                : "No keyframes."}
+            </p>
+            {selectedVideo?.processing && (
+              <button onClick={() => stopProcessing(selectedVideo.id)} style={styles.stopBtn}>
+                Stop Processing
+              </button>
+            )}
+          </div>
+        )}
         {kf && (
           <>
             <img src={api.imageUrl(kf.id)} alt={`frame ${kf.frame_number}`} style={styles.img} />
@@ -114,4 +165,15 @@ const styles = {
   grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 6, marginTop: 16 },
   thumb: { width: "100%", aspectRatio: "16/9", objectFit: "cover", borderRadius: 6, cursor: "pointer", border: "2px solid transparent" },
   activeThumb: { border: "2px solid #0ea5e9" },
+  stopBtn: {
+    background: "#ef4444",
+    color: "#fff",
+    border: "none",
+    borderRadius: 6,
+    padding: "6px 14px",
+    cursor: "pointer",
+    fontSize: 12,
+    fontWeight: 600,
+    marginTop: 8,
+  },
 };
