@@ -34,12 +34,12 @@ def _frame_diff_score(frame_a, frame_b):
     _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
     changed_pixels = cv2.countNonZero(thresh)
     total_pixels = thresh.shape[0] * thresh.shape[1]
-    return (changed_pixels / total_pixels) * 100
+    return (changed_pixels / total_pixels)
 
 
 def process_video(
     video_path,
-    video_id,
+    video_id=None,
     sample_every_n_frames=3,     # analyze every Nth frame (speed vs. accuracy)
     motion_threshold=0.03,       # % pixels changed between consecutive samples
                                  # to count as "hand/chalk still moving"
@@ -49,21 +49,39 @@ def process_video(
                                  # required to bother saving again
                                  # (skips saving duplicates of an unchanged board)
     min_gap_seconds=0.5,         # don't save two keyframes closer than this
+    on_keyframe=None,            # callback function to process detected keyframes in real-time
+    download_thread=None,        # active background download thread
+    stop_event=None,             # threading.Event to signal early exit
 ):
     """
     Reads a video file, detects board keyframes, saves them as JPGs in
     FRAMES_DIR, and returns a list of dicts ready to insert into the DB.
 
-    Two separate comparisons are used, which matters a lot in practice:
-      - frame vs. PREVIOUS frame  -> "is something moving right now?"
-      - frame vs. last SAVED keyframe -> "is this actually new content,
-        worth saving, or the same board as before?"
-
-    Returns: dict with fps, total_frames, duration_sec, keyframes list
+    Supports progressive streaming/processing: if download_thread is provided,
+    it will read frames from the growing file (or .part file) and reopen/seek
+    until the downloader completes.
     """
+    import time
+
+    # Wait for the file to exist and have some data
+    start_wait = time.time()
+    while True:
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            break
+
+        if download_thread and not download_thread.is_alive() and not os.path.exists(video_path):
+            raise ValueError(f"Download thread stopped before writing file: {video_path}")
+
+        if time.time() - start_wait > 45:  # 45 seconds timeout
+            raise TimeoutError(f"Timed out waiting for video download to write data: {video_path}")
+        time.sleep(0.5)
+
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        raise ValueError(f"Could not open video: {video_path}")
+        time.sleep(1.0)
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Could not open video: {video_path}")
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -80,11 +98,35 @@ def process_video(
     while True:
         ret, frame = cap.read()
         if not ret:
+            # If download is still active, wait for more frames
+            if download_thread and download_thread.is_alive() and not (stop_event and stop_event.is_set()):
+                cap.release()
+                time.sleep(1.0)
+
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    time.sleep(1.0)
+                    cap = cv2.VideoCapture(video_path)
+                    if not cap.isOpened():
+                        break
+
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                continue
+            else:
+                break
+
+        # Check stop_event on every sampled frame
+        if stop_event and stop_event.is_set():
+            print("  Stop event received — exiting early.", flush=True)
             break
 
         if frame_idx % sample_every_n_frames == 0:
             if frame_idx % 500 == 0:
-                print(f"  Processing frame {frame_idx}/{total_frames} ({100*frame_idx//total_frames}%)", flush=True)
+                if total_frames > 0:
+                    print(f"  Processing frame {frame_idx}/{total_frames} ({100*frame_idx//total_frames}%)", flush=True)
+                else:
+                    print(f"  Processing frame {frame_idx} (timestamp {frame_idx/fps:.1f}s)", flush=True)
+
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray = cv2.GaussianBlur(gray, (5, 5), 0)
             timestamp_sec = frame_idx / fps
@@ -115,12 +157,17 @@ def process_video(
                     image_path = os.path.join(FRAMES_DIR, image_filename)
                     cv2.imwrite(image_path, frame)
 
-                    keyframes.append({
+                    kf_data = {
                         "frame_number": frame_idx,
                         "timestamp_sec": round(timestamp_sec, 2),
                         "image_path": image_path,
                         "change_score": round(content_score, 3),
-                    })
+                    }
+                    keyframes.append(kf_data)
+
+                    # Trigger on_keyframe callback immediately
+                    if on_keyframe:
+                        on_keyframe(kf_data)
 
                     last_saved_gray = gray
                     last_saved_time = timestamp_sec
@@ -133,12 +180,17 @@ def process_video(
 
     cap.release()
 
+    # Update total frames and duration
+    total_frames = frame_idx
+    duration_sec = total_frames / fps if fps else 0
+
     return {
         "fps": fps,
         "total_frames": total_frames,
-        "duration_sec": total_frames / fps if fps else 0,
+        "duration_sec": duration_sec,
         "keyframes": keyframes,
     }
+
 
 
 if __name__ == "__main__":
