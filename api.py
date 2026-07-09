@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import zipfile
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
@@ -107,30 +107,39 @@ async def upload_video(
         tmp.write(await file.read())
         tmp_path = tmp.name
 
+    video_id = db.insert_video(
+        filename=file.filename or "Uploaded Video",
+        duration_sec=0,
+        total_frames=0,
+        fps=0,
+    )
+
+    def on_keyframe(kf):
+        db.insert_keyframe(
+            video_id=video_id,
+            frame_number=kf["frame_number"],
+            timestamp_sec=kf["timestamp_sec"],
+            image_path=kf["image_path"],
+            change_score=kf["change_score"],
+        )
+        if os.path.exists(kf["image_path"]):
+            os.unlink(kf["image_path"])
+
     try:
         result = process_video(
-            tmp_path, video_id=None,
+            tmp_path, video_id=video_id,
             sample_every_n_frames=sample_every_n_frames,
             motion_threshold=motion_threshold,
             stable_frames_required=stable_frames_required,
             new_content_threshold=new_content_threshold,
+            on_keyframe=on_keyframe,
         )
-        video_id = db.insert_video(
-            filename=file.filename,
+        db.update_video(
+            video_id=video_id,
             duration_sec=result["duration_sec"],
             total_frames=result["total_frames"],
             fps=result["fps"],
         )
-        for kf in result["keyframes"]:
-            db.insert_keyframe(
-                video_id=video_id,
-                frame_number=kf["frame_number"],
-                timestamp_sec=kf["timestamp_sec"],
-                image_path=kf["image_path"],
-                change_score=kf["change_score"],
-            )
-            if os.path.exists(kf["image_path"]):
-                os.unlink(kf["image_path"])
 
         return {
             "video_id": video_id,
@@ -168,41 +177,33 @@ async def upload_images(files: list[UploadFile] = File(...)):
 
 
 # --- Upload: URL -----------------------------------------------------------
-@app.post("/api/upload/url")
-def upload_url(req: UrlRequest):
-    try:
-        import yt_dlp
-    except ImportError:
-        raise HTTPException(500, "yt-dlp not installed")
+import threading
+
+# Global dictionary to track stop events for running video tasks
+running_tasks = {}  # video_id -> threading.Event
+
+def background_process_url(
+    video_id: str,
+    url: str,
+    sample_every_n_frames: int,
+    motion_threshold: float,
+    stable_frames_required: int,
+    new_content_threshold: float,
+):
+    import yt_dlp
+    import threading
+    import tempfile
+    import shutil
+    import os
+
+    stop_event = running_tasks.get(video_id)
 
     tmp_dir = tempfile.mkdtemp()
+    tmp_path = os.path.join(tmp_dir, "video.mkv")
+    dl_thread = None
     try:
-        ydl_opts = {
-            "format": "best[height<=720][ext=mp4]/best[height<=720]/best",
-            "outtmpl": os.path.join(tmp_dir, "%(title).80s.%(ext)s"),
-            "quiet": False,
-            "no_warnings": False,
-            "progress_hooks": [lambda d: print(f"[yt-dlp] {d['status']} {d.get('_percent_str','').strip()} {d.get('filename','')}", flush=True)],
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(req.url, download=True)
-            title = info.get("title", "Downloaded Video")
-            tmp_path = ydl.prepare_filename(info)
-
-        result = process_video(
-            tmp_path, video_id=None,
-            sample_every_n_frames=req.sample_every_n_frames,
-            motion_threshold=req.motion_threshold,
-            stable_frames_required=req.stable_frames_required,
-            new_content_threshold=req.new_content_threshold,
-        )
-        video_id = db.insert_video(
-            filename=title,
-            duration_sec=result["duration_sec"],
-            total_frames=result["total_frames"],
-            fps=result["fps"],
-        )
-        for kf in result["keyframes"]:
+        # Define callback to store keyframes immediately
+        def on_keyframe(kf):
             db.insert_keyframe(
                 video_id=video_id,
                 frame_number=kf["frame_number"],
@@ -213,15 +214,121 @@ def upload_url(req: UrlRequest):
             if os.path.exists(kf["image_path"]):
                 os.unlink(kf["image_path"])
 
+        # Start download in a thread.
+        # We specify Matroska (.mkv) container so that cv2.VideoCapture can read progressively!
+        # We only download the video stream to avoid extra merging steps or audio parsing.
+        def run_download():
+            dl_opts = {
+                "format": "bestvideo[height<=720]/best[height<=720]/best",
+                "outtmpl": tmp_path,
+                "merge_output_format": "mkv",
+                "nopart": True,   # Write directly, no .part rename
+                "quiet": True,
+                "no_warnings": True,
+                "noplaylist": True,
+            }
+            with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                ydl.download([url])
+
+        dl_thread = threading.Thread(target=run_download)
+        dl_thread.start()
+
+        # Run process_video progressively
+        result = process_video(
+            tmp_path, video_id=video_id,
+            sample_every_n_frames=sample_every_n_frames,
+            motion_threshold=motion_threshold,
+            stable_frames_required=stable_frames_required,
+            new_content_threshold=new_content_threshold,
+            on_keyframe=on_keyframe,
+            download_thread=dl_thread,
+            stop_event=stop_event,
+        )
+
+        # Update video with final metadata
+        db.update_video(
+            video_id=video_id,
+            duration_sec=result["duration_sec"],
+            total_frames=result["total_frames"],
+            fps=result["fps"],
+            processing=False,
+        )
+    except Exception as e:
+        print(f"Error in background_process_url: {e}", flush=True)
+        # Update video to stop showing it as processing if it crashed
+        db.update_video(video_id, 0, 0, 0, processing=False)
+    finally:
+        running_tasks.pop(video_id, None)
+        if dl_thread and dl_thread.is_alive():
+            dl_thread.join(timeout=5.0)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.post("/api/upload/url")
+def upload_url(req: UrlRequest, background_tasks: BackgroundTasks):
+    try:
+        import yt_dlp
+    except ImportError:
+        raise HTTPException(500, "yt-dlp not installed")
+
+    try:
+        # 1. Fetch info and title first without downloading
+        ydl_opts = {
+            "format": "bestvideo[height<=720]/best[height<=720]/best",
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(req.url, download=False)
+            title = info.get("title", "Downloaded Video")
+            duration = info.get("duration", 0)
+            fps = info.get("fps", 0)
+
+        # 2. Insert video record into DB immediately (with processing=True)
+        video_id = db.insert_video(
+            filename=title,
+            duration_sec=duration or 0,
+            total_frames=0,
+            fps=fps or 25.0,
+            processing=True,
+        )
+
+        # 3. Create a stop event and add to running_tasks
+        stop_event = threading.Event()
+        running_tasks[video_id] = stop_event
+
+        # 4. Add to background tasks
+        background_tasks.add_task(
+            background_process_url,
+            video_id,
+            req.url,
+            req.sample_every_n_frames,
+            req.motion_threshold,
+            req.stable_frames_required,
+            req.new_content_threshold,
+        )
+
         return {
-            "video_id": video_id, "title": title,
-            "duration_sec": result["duration_sec"],
-            "keyframes_captured": len(result["keyframes"]),
+            "video_id": video_id,
+            "title": title,
+            "status": "processing",
         }
     except Exception as e:
         raise HTTPException(500, str(e))
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.post("/api/videos/{video_id}/stop")
+def stop_video_processing(video_id: str):
+    if video_id in running_tasks:
+        running_tasks[video_id].set()
+        # Also update DB in case the thread takes a moment to exit
+        db.update_video(video_id, 0, 0, 0, processing=False)
+        return {"message": "Stop signal sent successfully."}
+    else:
+        # Just in case, ensure the DB flag is cleared
+        db.update_video(video_id, 0, 0, 0, processing=False)
+        raise HTTPException(404, "Video is not currently processing or has already finished.")
 
 
 # --- Dataset ZIP Download -------------------------------------------------
