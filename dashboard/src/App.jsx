@@ -5,7 +5,7 @@ import UploadPanel from "./components/UploadPanel";
 import Library from "./components/Library";
 import DatasetExplorer from "./components/DatasetExplorer";
 
-const TABS = ["Video Processing", "Dataset Library", "Dataset Explorer"];
+const TABS = ["Folder Upload", "Dataset Library", "Dataset Explorer"];
 
 export default function App() {
   const [tab, setTab] = useState("Dataset Library");
@@ -65,7 +65,7 @@ export default function App() {
           {TABS.map(t => (
             <button key={t} onClick={() => setTab(t)}
               style={{ ...styles.tab, ...(tab === t ? styles.activeTab : {}) }}>
-              {t === "Video Processing" && "📹 "}
+              {t === "Folder Upload" && "📁 "}
               {t === "Dataset Library" && "📚 "}
               {t === "Dataset Explorer" && "🔬 "}
               {t}
@@ -75,7 +75,7 @@ export default function App() {
 
         {/* Tab Content */}
         <div style={styles.content}>
-          {tab === "Video Processing" && <UploadPanel onDone={onUploadDone} />}
+          {tab === "Folder Upload" && <UploadPanel onDone={onUploadDone} />}
           {tab === "Dataset Library" && <Library refreshKey={refreshKey} />}
           {tab === "Dataset Explorer" && <DatasetExplorer refreshKey={refreshKey} />}
         </div>
