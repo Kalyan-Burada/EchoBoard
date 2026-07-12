@@ -27,6 +27,7 @@ export default function Library({ refreshKey }) {
     }).catch(() => setLoading(false));
   }, [refreshKey]);
 
+  // Auto-refresh when videos are processing
   useEffect(() => {
     const isProcessing = videos.some(v => v.processing);
     if (!isProcessing) return;
@@ -34,7 +35,6 @@ export default function Library({ refreshKey }) {
     const interval = setInterval(() => {
       api.getVideos().then(vs => {
         setVideos(vs);
-        
         const curVideo = vs.find(v => v.id === selected);
         if (curVideo && (curVideo.processing || keyframes.length === 0)) {
           api.getKeyframes(selected).then(kfs => {
@@ -69,10 +69,9 @@ export default function Library({ refreshKey }) {
     }
   }
 
-  if (loading) return <p style={{ color: "#94a3b8" }}>Loading library…</p>;
-  if (!videos.length) return <p style={{ color: "#94a3b8" }}>No videos yet. Upload one first.</p>;
+  if (loading) return <p style={{ color: "#94a3b8" }}>Loading dataset…</p>;
+  if (!videos.length) return <p style={{ color: "#94a3b8" }}>No videos yet. Upload one to start building the ECHD dataset.</p>;
 
-  // open URL directly — browser triggers file download
   function downloadVideo(id) { window.open(api.videoZipUrl(id), "_blank"); }
   function downloadAll() { window.open(api.datasetZipUrl(), "_blank"); }
 
@@ -83,6 +82,7 @@ export default function Library({ refreshKey }) {
     <div style={styles.wrap}>
       {/* Sidebar */}
       <div style={styles.sidebar}>
+        <h4 style={styles.sidebarTitle}>📁 Source Videos</h4>
         {videos.map(v => (
           <div key={v.id} onClick={() => selectVideo(v.id)}
             style={{ ...styles.videoItem, ...(selected === v.id ? styles.activeItem : {}) }}>
@@ -101,35 +101,54 @@ export default function Library({ refreshKey }) {
 
       {/* Main viewer */}
       <div style={styles.viewer}>
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
-          <button onClick={downloadAll} style={styles.dlBtn}>⬇️ Download Full Dataset (ZIP)</button>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <h4 style={{ color: "#e2e8f0", margin: 0, fontSize: 15 }}>
+            {keyframes.length > 0 ? `${keyframes.length} Dataset Images` : "Dataset Images"}
+          </h4>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => downloadVideo(selected)} style={styles.dlBtnSm}>⬇️ This Sequence</button>
+            <button onClick={downloadAll} style={styles.dlBtn}>⬇️ Full ECHD Dataset</button>
+          </div>
         </div>
+
         {keyframes.length === 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start" }}>
-            <p style={{ color: selectedVideo?.processing ? "#38bdf8" : "#94a3b8", margin: 0 }}>
+          <div style={styles.emptyState}>
+            <p style={{ color: selectedVideo?.processing ? "#38bdf8" : "#64748b", margin: 0, fontSize: 14 }}>
               {selectedVideo?.processing
-                ? "⏳ Downloading and processing video... Keyframes will appear here automatically."
-                : "No keyframes."}
+                ? "⏳ Downloading and processing video... Dataset images will appear here automatically."
+                : "No dataset images for this video."}
             </p>
             {selectedVideo?.processing && (
               <button onClick={() => stopProcessing(selectedVideo.id)} style={styles.stopBtn}>
-                Stop Processing
+                ⏹ Stop Processing
               </button>
             )}
           </div>
         )}
+
         {kf && (
           <>
-            <img src={api.imageUrl(kf.id)} alt={`frame ${kf.frame_number}`} style={styles.img} />
-            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "8px 0 4px" }}>
-              <p style={styles.caption}>t = {kf.timestamp_sec}s · frame {kf.frame_number}</p>
-              <button onClick={() => downloadVideo(selected)} style={styles.dlBtnSm}>⬇️ This video ZIP</button>
+            <img src={api.imageUrl(kf.id)} alt={`frame ${kf.frame_index}`} style={styles.img} />
+
+            {/* Metadata panel */}
+            <div style={styles.metaPanel}>
+              <MetaItem label="ECHD ID" value={kf.image_id} highlight />
+              <MetaItem label="Sequence" value={kf.sequence_id} />
+              <MetaItem label="Subject" value={kf.subject} />
+              <MetaItem label="Board" value={kf.board_type} />
+              <MetaItem label="Writer" value={kf.writer_id} />
+              <MetaItem label="Frame" value={kf.frame_index} />
+              <MetaItem label="Time" value={`${kf.timestamp_ms}ms`} />
+              <MetaItem label="Status" value={kf.annotation_status}
+                color={kf.annotation_status === "Pending" ? "#f59e0b" : "#10b981"} />
+              <MetaItem label="Version" value={kf.dataset_version} />
             </div>
+
             <input type="range" min={0} max={keyframes.length - 1} value={idx}
               onChange={e => setIdx(parseInt(e.target.value))} style={styles.timeline} />
             <p style={styles.counter}>{idx + 1} / {keyframes.length}</p>
 
-            {/* Grid */}
+            {/* Thumbnail Grid */}
             <div style={styles.grid}>
               {keyframes.map((k, i) => (
                 <img key={k.id} src={api.imageUrl(k.id)} alt=""
@@ -144,36 +163,70 @@ export default function Library({ refreshKey }) {
   );
 }
 
+function MetaItem({ label, value, highlight, color }) {
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <span style={{ fontSize: 11, color: "#64748b", minWidth: 60 }}>{label}:</span>
+      <span style={{
+        fontSize: 12,
+        color: color || (highlight ? "#22d3ee" : "#cbd5e1"),
+        fontWeight: highlight ? 700 : 400,
+        fontFamily: highlight ? "monospace" : "inherit",
+      }}>{value}</span>
+    </div>
+  );
+}
+
 const styles = {
   wrap: { display: "flex", gap: 20 },
   sidebar: { width: 240, display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 },
+  sidebarTitle: { color: "#94a3b8", fontSize: 13, fontWeight: 600, margin: "0 0 8px 0" },
   videoItem: {
-    background: "#1e293b", borderRadius: 10, padding: "10px 12px",
+    background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+    border: "1px solid #1e293b",
+    borderRadius: 10, padding: "10px 12px",
     cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", gap: 2,
+    transition: "border-color 0.2s",
   },
   activeItem: { border: "2px solid #0ea5e9" },
   videoName: { fontSize: 13, color: "#e2e8f0", fontWeight: 600, wordBreak: "break-word" },
   meta: { fontSize: 11, color: "#64748b" },
   delBtn: { position: "absolute", top: 8, right: 8, background: "none", border: "none", cursor: "pointer", fontSize: 14 },
   viewer: { flex: 1 },
-  img: { width: "100%", borderRadius: 10, maxHeight: 420, objectFit: "contain", background: "#0f172a" },
-  caption: { color: "#94a3b8", fontSize: 13, margin: "8px 0 4px" },
+  img: { width: "100%", borderRadius: 12, maxHeight: 420, objectFit: "contain", background: "#0f172a", border: "1px solid #1e293b" },
+  metaPanel: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
+    gap: "6px 16px",
+    background: "rgba(14, 165, 233, 0.06)",
+    border: "1px solid #1e293b",
+    borderRadius: 10,
+    padding: "12px 16px",
+    margin: "10px 0",
+  },
   timeline: { width: "100%", margin: "4px 0" },
-  counter: { color: "#64748b", fontSize: 12, textAlign: "right" },
-  dlBtn: { padding: "8px 16px", borderRadius: 8, border: "none", background: "#0ea5e9", color: "#fff", fontWeight: 600, cursor: "pointer", fontSize: 13 },
-  dlBtnSm: { padding: "4px 12px", borderRadius: 6, border: "none", background: "#334155", color: "#94a3b8", cursor: "pointer", fontSize: 12 },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 6, marginTop: 16 },
+  counter: { color: "#64748b", fontSize: 12, textAlign: "right", margin: "2px 0 10px" },
+  dlBtn: {
+    padding: "7px 14px", borderRadius: 8, border: "none",
+    background: "linear-gradient(135deg, #0ea5e9, #06b6d4)", color: "#fff",
+    fontWeight: 600, cursor: "pointer", fontSize: 12,
+  },
+  dlBtnSm: {
+    padding: "7px 14px", borderRadius: 8, border: "1px solid #334155",
+    background: "#0f172a", color: "#94a3b8", cursor: "pointer", fontSize: 12,
+  },
+  emptyState: {
+    display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start",
+    padding: "28px 20px",
+    background: "rgba(100, 116, 139, 0.06)",
+    border: "1px dashed #334155",
+    borderRadius: 12,
+  },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 6 },
   thumb: { width: "100%", aspectRatio: "16/9", objectFit: "cover", borderRadius: 6, cursor: "pointer", border: "2px solid transparent" },
   activeThumb: { border: "2px solid #0ea5e9" },
   stopBtn: {
-    background: "#ef4444",
-    color: "#fff",
-    border: "none",
-    borderRadius: 6,
-    padding: "6px 14px",
-    cursor: "pointer",
-    fontSize: 12,
-    fontWeight: 600,
-    marginTop: 8,
+    background: "#ef4444", color: "#fff", border: "none", borderRadius: 8,
+    padding: "8px 16px", cursor: "pointer", fontSize: 13, fontWeight: 600,
   },
 };
