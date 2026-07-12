@@ -7,3 +7,6 @@ storage/
 dashboard/node_modules/
 dashboard/dist/
 .env
+
+dataset/
+minio-server/

@@ -104,12 +104,12 @@ def get_stats():
 @app.get("/api/videos")
 def list_videos():
     """List all source videos."""
-    return db.get_all_videos()
+    return db.get_videos()
 
 
 @app.get("/api/videos/{video_id}")
 def get_video(video_id: str):
-    v = db.get_video_by_id(video_id)
+    v = db.get_video(video_id)
     if not v:
         raise HTTPException(404, "Video not found")
     return v

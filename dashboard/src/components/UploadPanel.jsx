@@ -2,51 +2,31 @@ import { useState } from "react";
 import { api } from "../api";
 
 export default function UploadPanel({ onDone }) {
-  const [mode, setMode] = useState("video");
-  const [status, setStatus] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  // Processing params
-  const [sampleN, setSampleN] = useState(3);
-  const [motionT, setMotionT] = useState(0.03);
-  const [stableN, setStableN] = useState(4);
-  const [contentT, setContentT] = useState(0.05);
-  const [url, setUrl] = useState("");
-
   // Dataset metadata
   const [subject, setSubject] = useState("Mathematics");
   const [boardType, setBoardType] = useState("Blackboard");
   const [writerId, setWriterId] = useState("teacher01");
   const [sequenceId, setSequenceId] = useState("");
-
-  async function handleVideoUpload(e) {
-    e.preventDefault();
-    const file = e.target.elements.videoFile.files[0];
-    if (!file) return;
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("subject", subject);
-    fd.append("board_type", boardType);
-    fd.append("writer_id", writerId);
-    fd.append("sample_every_n_frames", sampleN);
-    fd.append("motion_threshold", motionT);
-    fd.append("stable_frames_required", stableN);
-    fd.append("new_content_threshold", contentT);
-    setLoading(true); setStatus(null);
-    try {
-      const res = await api.uploadVideo(fd);
-      setStatus({ ok: true, msg: `✅ ${res.keyframes_captured} keyframes captured → sequence "${res.sequence_id}"` });
-      onDone();
-    } catch { setStatus({ ok: false, msg: "Upload failed." }); }
-    setLoading(false);
-  }
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState(null);
 
   async function handleImagesUpload(e) {
     e.preventDefault();
     const files = e.target.elements.imgFiles.files;
     if (!files.length) return;
     const fd = new FormData();
-    for (const f of files) fd.append("files", f);
+    for (const f of files) {
+      // Filter out non-image files if they accidentally select a folder with other stuff
+      if (f.type.startsWith("image/")) {
+        fd.append("files", f);
+      }
+    }
+    
+    if (!fd.has("files")) {
+      setStatus({ ok: false, msg: "No valid images found in the selected folder." });
+      return;
+    }
+
     fd.append("subject", subject);
     fd.append("board_type", boardType);
     fd.append("writer_id", writerId);
@@ -60,41 +40,8 @@ export default function UploadPanel({ onDone }) {
     setLoading(false);
   }
 
-  async function handleUrlUpload(e) {
-    e.preventDefault();
-    if (!url.trim()) return;
-    setLoading(true); setStatus(null);
-    try {
-      const res = await api.uploadUrl({
-        url,
-        subject,
-        board_type: boardType,
-        writer_id: writerId,
-        sample_every_n_frames: sampleN,
-        motion_threshold: motionT,
-        stable_frames_required: stableN,
-        new_content_threshold: contentT,
-      });
-      setStatus({ ok: true, msg: `✅ "${res.title}" is downloading & processing in the background!` });
-      setTimeout(() => { onDone(); }, 1000);
-    } catch {
-      setStatus({ ok: false, msg: "Processing failed." });
-      setLoading(false);
-    }
-  }
-
   return (
     <div style={styles.wrap}>
-      {/* Upload mode tabs */}
-      <div style={styles.tabs}>
-        {["video", "images", "url"].map(m => (
-          <button key={m} onClick={() => setMode(m)}
-            style={{ ...styles.tab, ...(mode === m ? styles.activeTab : {}) }}>
-            {m === "video" ? "📹 Video" : m === "images" ? "🖼️ Images" : "🔗 URL"}
-          </button>
-        ))}
-      </div>
-
       {/* Dataset Metadata Fields */}
       <div style={styles.metaSection}>
         <h4 style={styles.sectionTitle}>📋 Dataset Metadata</h4>
@@ -122,66 +69,24 @@ export default function UploadPanel({ onDone }) {
             <input value={writerId} onChange={e => setWriterId(e.target.value)}
               placeholder="e.g. teacher01" style={styles.input} />
           </div>
-          {mode === "images" && (
-            <div style={styles.field}>
-              <label style={styles.label}>Sequence ID (optional)</label>
-              <input value={sequenceId} onChange={e => setSequenceId(e.target.value)}
-                placeholder="e.g. math001" style={styles.input} />
-            </div>
-          )}
+          <div style={styles.field}>
+            <label style={styles.label}>Sequence ID (optional)</label>
+            <input value={sequenceId} onChange={e => setSequenceId(e.target.value)}
+              placeholder="e.g. math001" style={styles.input} />
+          </div>
         </div>
       </div>
 
       {/* Upload Forms */}
-      {mode === "video" && (
-        <form onSubmit={handleVideoUpload} style={styles.form}>
-          <input name="videoFile" type="file" accept=".mp4,.avi,.mov,.mkv,.webm" style={styles.fileInput} />
-          <ParamSliders {...{ sampleN, setSampleN, motionT, setMotionT, stableN, setStableN, contentT, setContentT }} />
-          <button type="submit" style={styles.btn} disabled={loading}>{loading ? "Processing…" : "Process Video"}</button>
-        </form>
-      )}
-
-      {mode === "images" && (
-        <form onSubmit={handleImagesUpload} style={styles.form}>
-          <input name="imgFiles" type="file" accept=".jpg,.jpeg,.png,.bmp,.webp" multiple style={styles.fileInput} />
-          <button type="submit" style={styles.btn} disabled={loading}>{loading ? "Storing…" : "Store Images"}</button>
-        </form>
-      )}
-
-      {mode === "url" && (
-        <form onSubmit={handleUrlUpload} style={styles.form}>
-          <input value={url} onChange={e => setUrl(e.target.value)}
-            placeholder="https://youtube.com/watch?v=…" style={styles.input} />
-          <ParamSliders {...{ sampleN, setSampleN, motionT, setMotionT, stableN, setStableN, contentT, setContentT }} />
-          <button type="submit" style={styles.btn} disabled={loading}>{loading ? "Processing…" : "Download & Process"}</button>
-        </form>
-      )}
+      <form onSubmit={handleImagesUpload} style={styles.form}>
+        <label style={styles.label}>Select a folder containing images to upload:</label>
+        <input name="imgFiles" type="file" accept="image/*" multiple webkitdirectory="true" directory="true" style={styles.fileInput} />
+        <button type="submit" style={styles.btn} disabled={loading}>{loading ? "Storing Folder in MinIO…" : "Upload Entire Folder"}</button>
+      </form>
 
       {status && (
         <p style={{ ...styles.status, color: status.ok ? "#10b981" : "#ef4444" }}>{status.msg}</p>
       )}
-    </div>
-  );
-}
-
-function ParamSliders({ sampleN, setSampleN, motionT, setMotionT, stableN, setStableN, contentT, setContentT }) {
-  return (
-    <div style={styles.sliders}>
-      <h4 style={styles.sectionTitle}>⚙️ Keyframe Detection Parameters</h4>
-      <SliderRow label={`Sample every ${sampleN} frames`} min={1} max={30} step={1} value={sampleN} onChange={setSampleN} />
-      <SliderRow label={`Motion threshold: ${motionT}`} min={0.005} max={0.5} step={0.005} value={motionT} onChange={setMotionT} />
-      <SliderRow label={`Stable frames required: ${stableN}`} min={1} max={20} step={1} value={stableN} onChange={setStableN} />
-      <SliderRow label={`New-content threshold: ${contentT}`} min={0.01} max={2} step={0.01} value={contentT} onChange={setContentT} />
-    </div>
-  );
-}
-
-function SliderRow({ label, min, max, step, value, onChange }) {
-  return (
-    <div style={styles.sliderRow}>
-      <span style={styles.sliderLabel}>{label}</span>
-      <input type="range" min={min} max={max} step={step} value={value}
-        onChange={e => onChange(parseFloat(e.target.value))} style={{ flex: 1, accentColor: "#0ea5e9" }} />
     </div>
   );
 }
