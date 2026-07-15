@@ -90,8 +90,10 @@ export default function Library({ refreshKey }) {
             <span style={styles.meta}>
               {v.processing ? (
                 <span style={{ color: "#38bdf8", fontWeight: 600 }}>⏳ Processing...</span>
+              ) : v.fps === 0 ? (
+                `${v.total_frames} images · ${(v.uploaded_at || "").slice(0, 10)}`
               ) : (
-                `${v.duration_sec.toFixed(1)}s · ${v.uploaded_at.slice(0, 10)}`
+                `${(v.duration_sec || 0).toFixed(1)}s · ${(v.uploaded_at || "").slice(0, 10)}`
               )}
             </span>
             <button onClick={e => { e.stopPropagation(); handleDelete(v.id); }} style={styles.delBtn}>🗑</button>
