@@ -186,7 +186,12 @@ def get_dataset_images(limit=500, **kwargs):
     rows = db.dataset_images.find(query).sort("created_at", DESCENDING).limit(limit)
     results = []
     for r in rows:
-        r["_id"] = str(r["_id"])
+        r["id"] = str(r.pop("_id"))
+        # Normalize fields for frontend compatibility
+        if "image_id" not in r:
+            r["image_id"] = r.get("image_name", "unknown")
+        if "image_path" not in r:
+            r["image_path"] = ""
         results.append(r)
     return results
 
@@ -196,7 +201,7 @@ def get_dataset_image_by_id(image_id):
     db = get_db()
     r = db.dataset_images.find_one({"image_id": image_id})
     if r:
-        r["_id"] = str(r["_id"])
+        r["id"] = str(r.pop("_id"))
     return r
 
 
@@ -206,7 +211,7 @@ def get_dataset_image_by_internal_id(internal_id):
         db = get_db()
         r = db.dataset_images.find_one({"_id": ObjectId(internal_id)})
         if r:
-            r["_id"] = str(r["_id"])
+            r["id"] = str(r.pop("_id"))
         return r
     except Exception:
         return None
@@ -224,10 +229,13 @@ def get_stats():
     db = get_db()
     total = db.dataset_images.count_documents({})
     annotated = db.dataset_images.count_documents({"processing_status.annotation_completed": True})
+    total_videos = db.videos.count_documents({}) if "videos" in db.list_collection_names() else 0
     return {
+        "total_videos": total_videos,
         "total_images": total,
-        "annotated_images": annotated,
-        "pending_images": total - annotated,
+        "pending_annotations": total - annotated,
+        "completed_annotations": annotated,
+        "current_version": "ECHD_v1",
     }
 
 
