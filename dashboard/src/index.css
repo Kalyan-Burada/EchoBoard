@@ -1,15 +1,146 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: #0f172a;
-  color: #e2e8f0;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+/* ── Design Tokens ──────────────────────────────────────────── */
+@theme {
+  --color-bg-primary: #09090B;
+  --color-bg-secondary: #111827;
+  --color-bg-card: #18181B;
+  --color-bg-card-hover: #1f1f23;
+  --color-border: #27272A;
+  --color-border-subtle: #1e1e22;
+  --color-text-primary: #FAFAFA;
+  --color-text-secondary: #A1A1AA;
+  --color-text-muted: #71717A;
+  --color-accent: #3B82F6;
+  --color-accent-cyan: #06B6D4;
+  --color-accent-purple: #8B5CF6;
+  --color-accent-green: #10B981;
+  --color-accent-amber: #F59E0B;
+  --color-accent-rose: #F43F5E;
 }
-input[type="range"] { accent-color: #0ea5e9; }
 
-/* Scrollbar styling */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #0f172a; }
-::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #475569; }
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+/* ── Light Theme ────────────────────────────────────────────── */
+body.light {
+  --color-bg-primary: #FAFAFA;
+  --color-bg-secondary: #F4F4F5;
+  --color-bg-card: #FFFFFF;
+  --color-bg-card-hover: #F9F9FB;
+  --color-border: #E4E4E7;
+  --color-border-subtle: #F0F0F2;
+  --color-text-primary: #09090B;
+  --color-text-secondary: #52525B;
+  --color-text-muted: #A1A1AA;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #27272A; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+body.light ::-webkit-scrollbar-thumb { background: #d4d4d8; }
+body.light ::-webkit-scrollbar-thumb:hover { background: #a1a1aa; }
+
+/* ── Range Inputs ───────────────────────────────────────────── */
+input[type="range"] { accent-color: var(--color-accent); }
+
+/* ── Selection ──────────────────────────────────────────────── */
+::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: var(--color-text-primary);
+}
+
+/* ── Focus Ring ─────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ── Glass Card ─────────────────────────────────────────────── */
+.glass {
+  background: rgba(24, 24, 27, 0.6);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(39, 39, 42, 0.5);
+}
+
+body.light .glass {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(228, 228, 231, 0.6);
+}
+
+/* ── Gradient Text ──────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, #3B82F6, #06B6D4);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Glow Effects ───────────────────────────────────────────── */
+.glow-blue {
+  box-shadow: 0 0 40px rgba(59, 130, 246, 0.15), 0 0 80px rgba(59, 130, 246, 0.05);
+}
+
+.glow-cyan {
+  box-shadow: 0 0 40px rgba(6, 182, 212, 0.15), 0 0 80px rgba(6, 182, 212, 0.05);
+}
+
+body.light .glow-blue {
+  box-shadow: 0 4px 24px rgba(59, 130, 246, 0.12), 0 1px 4px rgba(0,0,0,0.04);
+}
+
+/* ── Animated Grid Background ───────────────────────────────── */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+  background-size: 64px 64px;
+}
+
+body.light .grid-bg {
+  background-image:
+    linear-gradient(rgba(59, 130, 246, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.06) 1px, transparent 1px);
+}
+
+/* ── Animations ─────────────────────────────────────────────── */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.animate-float { animation: float 6s ease-in-out infinite; }
+.animate-pulse-glow { animation: pulse-glow 3s ease-in-out infinite; }
+.animate-gradient {
+  background-size: 200% 200%;
+  animation: gradient-shift 8s ease infinite;
+}
