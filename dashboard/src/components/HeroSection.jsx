@@ -1,13 +1,21 @@
-import { motion } from "framer-motion";
+import { useState, useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { ArrowDown, Database, Sparkles } from "lucide-react";
 import { api } from "../api";
 import { useTheme } from "../ThemeContext";
 
 export default function HeroSection({ onNavigate }) {
   const { dark } = useTheme();
+  const [phase, setPhase] = useState("greeting"); // "greeting" -> "erasing" -> "echoboard"
+
+  useEffect(() => {
+    const t1 = setTimeout(() => setPhase("erasing"), 2000);
+    const t2 = setTimeout(() => setPhase("echoboard"), 3500);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);
 
   return (
-    <section id="home" className="relative min-h-screen flex items-center justify-center overflow-hidden px-6 sm:px-10 lg:px-16">
+    <section id="home" className="relative min-h-screen flex flex-col justify-center overflow-hidden px-6 sm:px-10 lg:px-16 pt-24 pb-12">
       {/* Background effects */}
       <div className="absolute inset-0 grid-bg" />
 
@@ -37,7 +45,7 @@ export default function HeroSection({ onNavigate }) {
           <div className="relative inline-block mb-28 sm:mb-32 mt-12 w-full max-w-[90%] sm:max-w-max mx-auto">
             {/* Board frame */}
             <div
-              className="absolute -inset-x-12 -inset-y-6 rounded-2xl border-4"
+              className="absolute -inset-x-4 sm:-inset-x-12 -inset-y-4 sm:-inset-y-6 rounded-2xl border-4"
               style={{
                 borderColor: dark ? "#3f3f46" : "#78716c",
                 background: dark
@@ -66,23 +74,102 @@ export default function HeroSection({ onNavigate }) {
             </div>
 
             {/* Title */}
-            <h1 className="relative text-6xl sm:text-7xl lg:text-[6rem] font-black tracking-tight py-2 px-4">
-              <span
-                className="bg-clip-text text-transparent"
-                style={{
-                  backgroundImage: "linear-gradient(135deg, #3B82F6 0%, #06B6D4 50%, #8B5CF6 100%)",
-                }}
-              >
-                Echo
-              </span>
-              <span
-                style={{
-                  color: dark ? "#1c1917" : "#fafaf9",
-                  textShadow: dark ? "none" : "0 2px 8px rgba(0,0,0,0.3)",
-                }}
-              >
-                Board
-              </span>
+            <h1 className="relative text-5xl sm:text-7xl lg:text-[6rem] font-black tracking-tight py-2 px-4 flex items-center justify-center">
+              
+              {/* Invisible placeholder to maintain layout size */}
+              <div className="invisible opacity-0 pointer-events-none" aria-hidden="true">
+                <span>Echo</span><span>Board</span>
+              </div>
+
+              {/* Greeting Text */}
+              <AnimatePresence>
+                {(phase === "greeting" || phase === "erasing") && (
+                  <motion.div
+                    className="absolute inset-0 flex items-center justify-center whitespace-nowrap"
+                    initial={{ clipPath: "inset(0 0% 0 0)" }}
+                    animate={phase === "erasing" ? { 
+                      clipPath: [
+                        "inset(0 0% 0 0)", 
+                        "inset(0 15% 0 0)", 
+                        "inset(0 10% 0 0)", 
+                        "inset(0 30% 0 0)", 
+                        "inset(0 25% 0 0)", 
+                        "inset(0 50% 0 0)", 
+                        "inset(0 45% 0 0)", 
+                        "inset(0 70% 0 0)", 
+                        "inset(0 65% 0 0)", 
+                        "inset(0 90% 0 0)", 
+                        "inset(0 85% 0 0)", 
+                        "inset(0 100% 0 0)"
+                      ] 
+                    } : {}}
+                    transition={{ duration: 1.5, ease: "easeInOut" }}
+                    exit={{ opacity: 0 }}
+                  >
+                    <span 
+                      className="drop-shadow-md" 
+                      style={{ color: dark ? "#1c1917" : "#ffffff", fontFamily: "'Comic Sans MS', 'Chalkboard SE', cursive" }}
+                    >
+                      Hi Learners!
+                    </span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* EchoBoard Text */}
+              <AnimatePresence>
+                {phase === "echoboard" && (
+                  <motion.div
+                    className="absolute inset-0 flex items-center justify-center whitespace-nowrap"
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.6, ease: "easeOut" }}
+                  >
+                    <span
+                      className="bg-clip-text text-transparent"
+                      style={{
+                        backgroundImage: "linear-gradient(135deg, #3B82F6 0%, #06B6D4 50%, #8B5CF6 100%)",
+                      }}
+                    >
+                      Echo
+                    </span>
+                    <span
+                      style={{
+                        color: dark ? "#1c1917" : "#fafaf9",
+                        textShadow: dark ? "none" : "0 2px 8px rgba(0,0,0,0.3)",
+                      }}
+                    >
+                      Board
+                    </span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Duster */}
+              <AnimatePresence>
+                {phase === "erasing" && (
+                  <motion.div
+                    className="absolute top-0 bottom-0 z-20 flex items-center"
+                    initial={{ left: "100%", x: "0%", y: "0%", rotate: 0 }}
+                    animate={{ 
+                      left: ["100%", "85%", "90%", "70%", "75%", "50%", "55%", "30%", "35%", "10%", "15%", "-10%"],
+                      y: ["0%", "20%", "-20%", "30%", "-30%", "35%", "-35%", "25%", "-25%", "15%", "-15%", "0%"],
+                      rotate: [0, 10, -10, 15, -15, 20, -20, 15, -15, 10, -10, 0],
+                      x: "-100%" 
+                    }}
+                    transition={{ duration: 1.5, ease: "easeInOut" }}
+                  >
+                    <div className="w-16 sm:w-20 h-20 sm:h-28 rounded-md shadow-[0_10px_20px_rgba(0,0,0,0.5)] flex flex-col overflow-hidden" 
+                         style={{ background: "#8B5A2B" }}> {/* Wood back */}
+                      {/* Wood texture lines */}
+                      <div className="flex-1 opacity-20" 
+                           style={{ backgroundImage: "repeating-linear-gradient(90deg, transparent, transparent 4px, rgba(0,0,0,0.2) 4px, rgba(0,0,0,0.2) 8px)" }} />
+                      {/* White felt erasing pad */}
+                      <div className="h-5 sm:h-7 bg-[#e5e7eb] border-t-2 border-[#d1d5db] shadow-inner" />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </h1>
           </div>
 
