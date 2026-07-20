@@ -7,7 +7,6 @@ import PipelineSection from "./components/PipelineSection";
 import ApplicationsSection from "./components/ApplicationsSection";
 import StatsBar from "./components/StatsBar";
 import UploadPanel from "./components/UploadPanel";
-import Library from "./components/Library";
 import DatasetExplorer from "./components/DatasetExplorer";
 import DocsSection from "./components/DocsSection";
 import TeamSection from "./components/TeamSection";
@@ -15,7 +14,7 @@ import Footer from "./components/Footer";
 
 const SECTION_IDS = [
   "home", "about", "pipeline", "applications", "statistics",
-  "upload", "explorer", "datasets", "docs", "team", "contact",
+  "upload", "explorer", "docs", "team", "contact",
 ];
 
 export default function App() {
@@ -69,18 +68,6 @@ export default function App() {
 
         {/* Functional Sections */}
         <UploadPanel onDone={onUploadDone} />
-
-        {/* Library (inline, not a separate section with ID — it's part of the datasets view) */}
-        <section id="datasets" className="py-28 px-6 sm:px-10 lg:px-16">
-          <div className="max-w-6xl mx-auto">
-            <div className="text-center mb-8">
-              <p className="text-sm font-bold tracking-widest uppercase mb-4"
-                style={{ background: "linear-gradient(135deg, #10B981, #F59E0B)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Dataset Library</p>
-              <h2 className="block text-3xl sm:text-4xl lg:text-5xl font-bold text-[var(--color-text-primary)] mb-5 leading-tight">Manage Your Datasets</h2>
-            </div>
-            <Library refreshKey={refreshKey} />
-          </div>
-        </section>
 
         <DatasetExplorer refreshKey={refreshKey} />
         <DocsSection />

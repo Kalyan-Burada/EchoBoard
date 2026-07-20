@@ -11,7 +11,6 @@ const NAV_ITEMS = [
   { label: "Statistics", id: "statistics" },
   { label: "Upload", id: "upload" },
   { label: "Explorer", id: "explorer" },
-  { label: "Datasets", id: "datasets" },
   { label: "Docs", id: "docs" },
   { label: "Team", id: "team" },
 ];
@@ -58,45 +57,48 @@ export default function Navbar({ activeSection, onNavigate }) {
             </span>
           </button>
 
-          {/* Desktop Nav */}
-          <div className="hidden lg:flex items-center gap-1">
-            {NAV_ITEMS.map(item => (
-              <button
-                key={item.id}
-                onClick={() => handleNav(item.id)}
-                className={`relative px-3 py-1.5 text-[13px] font-medium rounded-lg transition-all duration-200 cursor-pointer bg-transparent border-none ${
-                  activeSection === item.id
-                    ? "text-[var(--color-accent)]"
-                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-card)]"
-                }`}
-              >
-                {item.label}
-                {activeSection === item.id && (
-                  <motion.div
-                    layoutId="activeNav"
-                    className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-[var(--color-accent)] rounded-full"
-                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                  />
-                )}
-              </button>
-            ))}
-          </div>
+          {/* Navigation & Controls Wrapper */}
+          <div className="flex items-center gap-4 lg:gap-6">
+            {/* Desktop Nav */}
+            <div className="hidden lg:flex items-center gap-1">
+              {NAV_ITEMS.map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => handleNav(item.id)}
+                  className={`relative px-3 py-1.5 text-[13px] font-medium rounded-lg transition-all duration-200 cursor-pointer bg-transparent border-none ${
+                    activeSection === item.id
+                      ? "text-[var(--color-accent)]"
+                      : "text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-card)]"
+                  }`}
+                >
+                  {item.label}
+                  {activeSection === item.id && (
+                    <motion.div
+                      layoutId="activeNav"
+                      className="absolute bottom-0 left-1/2 -translate-x-1/2 w-4 h-0.5 bg-[var(--color-accent)] rounded-full"
+                      transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                    />
+                  )}
+                </button>
+              ))}
+            </div>
 
-          {/* Right side */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={toggle}
-              className="p-2 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-card)] transition-all duration-200 cursor-pointer bg-transparent border-none"
-              aria-label="Toggle theme"
-            >
-              {dark ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
-            <button
-              onClick={() => setMobileOpen(!mobileOpen)}
-              className="lg:hidden p-2 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-card)] transition-all cursor-pointer bg-transparent border-none"
-            >
-              {mobileOpen ? <X size={20} /> : <Menu size={20} />}
-            </button>
+            {/* Right side */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggle}
+                className="p-2 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-card)] transition-all duration-200 cursor-pointer bg-transparent border-none"
+                aria-label="Toggle theme"
+              >
+                {dark ? <Sun size={18} /> : <Moon size={18} />}
+              </button>
+              <button
+                onClick={() => setMobileOpen(!mobileOpen)}
+                className="lg:hidden p-2 rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-card)] transition-all cursor-pointer bg-transparent border-none"
+              >
+                {mobileOpen ? <X size={20} /> : <Menu size={20} />}
+              </button>
+            </div>
           </div>
         </div>
       </div>

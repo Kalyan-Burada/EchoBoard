@@ -9,6 +9,13 @@ const team = [
     linkedin: "#",
     initials: "SG",
   },
+  {
+    name: "Kalyan Burada",
+    role: "Project Lead & ML Engineer",
+    github: "https://github.com/Kalyan-Burada",
+    linkedin: "https://www.linkedin.com/in/burada-kalyan-b65a58292/",
+    initials: "KB",
+  },
 ];
 
 const container = { hidden: {}, show: { transition: { staggerChildren: 0.1 } } };

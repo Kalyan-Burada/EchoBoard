@@ -74,12 +74,7 @@ export default function Library({ refreshKey }) {
     </div>
   );
 
-  if (!videos.length) return (
-    <div className="py-24 px-6 text-center">
-      <FolderOpen size={40} className="mx-auto mb-4 text-[var(--color-text-muted)]" />
-      <p className="text-sm text-[var(--color-text-muted)]">No videos yet. Upload to start building the ECHD dataset.</p>
-    </div>
-  );
+  if (!videos.length) return null;
 
   return (
     <div className="py-8 flex gap-5 flex-col lg:flex-row">
