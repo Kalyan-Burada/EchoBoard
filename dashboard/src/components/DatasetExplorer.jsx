@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Search, RefreshCw, Trash2, X, Plus, Package } from "lucide-react";
 import { api } from "../api";
 
 export default function DatasetExplorer({ refreshKey }) {
@@ -6,48 +8,37 @@ export default function DatasetExplorer({ refreshKey }) {
   const [versions, setVersions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState(null);
-
-  // Filters
   const [filterSubject, setFilterSubject] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const [filterVersion, setFilterVersion] = useState("");
   const [filterWriter, setFilterWriter] = useState("");
-
-  // Version creation
   const [newVersionDesc, setNewVersionDesc] = useState("");
   const [versionMsg, setVersionMsg] = useState(null);
+  const [visibleCount, setVisibleCount] = useState(12);
 
   function loadImages() {
     setLoading(true);
+    setVisibleCount(12);
     const params = {};
     if (filterSubject) params.subject = filterSubject;
     if (filterStatus) params.annotation_status = filterStatus;
     if (filterVersion) params.dataset_version = filterVersion;
     if (filterWriter) params.writer_id = filterWriter;
-    api.getDatasetImages(params).then(imgs => {
-      setImages(imgs);
-      setLoading(false);
-    }).catch(() => setLoading(false));
+    api.getDatasetImages(params).then(imgs => { setImages(imgs); setLoading(false); }).catch(() => setLoading(false));
   }
 
-  function loadVersions() {
-    api.getVersions().then(setVersions).catch(() => {});
-  }
+  function loadVersions() { api.getVersions().then(setVersions).catch(() => {}); }
 
-  useEffect(() => {
-    loadImages();
-    loadVersions();
-  }, [refreshKey, filterSubject, filterStatus, filterVersion, filterWriter]);
+  useEffect(() => { loadImages(); loadVersions(); }, [refreshKey, filterSubject, filterStatus, filterVersion, filterWriter]);
 
   async function handleCreateVersion() {
     try {
       const res = await api.createVersion(newVersionDesc);
-      setVersionMsg(`✅ Created ${res.version}`);
+      setVersionMsg(`Created ${res.version}`);
       setNewVersionDesc("");
       loadVersions();
-    } catch {
-      setVersionMsg("❌ Failed to create version");
-    }
+      setTimeout(() => setVersionMsg(null), 3000);
+    } catch { setVersionMsg("Failed to create version"); }
   }
 
   async function handleDeleteImage(imageId) {
@@ -56,227 +47,163 @@ export default function DatasetExplorer({ refreshKey }) {
     if (selectedImage?.image_id === imageId) setSelectedImage(null);
   }
 
-  // Unique subjects and writers from current dataset
   const subjects = [...new Set(images.map(i => i.subject))];
   const writers = [...new Set(images.map(i => i.writer_id))];
 
+  const selectClass = "px-3 py-2 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-[var(--color-text-primary)] text-xs focus:border-[var(--color-accent)] focus:outline-none transition-colors appearance-none cursor-pointer";
+
   return (
-    <div style={styles.wrap}>
-      {/* Filters Bar */}
-      <div style={styles.filterBar}>
-        <h4 style={styles.sectionTitle}>🔍 Filter Dataset</h4>
-        <div style={styles.filters}>
-          <select value={filterSubject} onChange={e => setFilterSubject(e.target.value)} style={styles.select}>
-            <option value="">All Subjects</option>
-            {subjects.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={styles.select}>
-            <option value="">All Status</option>
-            <option value="Pending">⏳ Pending</option>
-            <option value="Completed">✅ Completed</option>
-          </select>
-          <select value={filterVersion} onChange={e => setFilterVersion(e.target.value)} style={styles.select}>
-            <option value="">All Versions</option>
-            {versions.map(v => <option key={v.version} value={v.version}>{v.version}</option>)}
-          </select>
-          <select value={filterWriter} onChange={e => setFilterWriter(e.target.value)} style={styles.select}>
-            <option value="">All Writers</option>
-            {writers.map(w => <option key={w} value={w}>{w}</option>)}
-          </select>
-          <button onClick={loadImages} style={styles.refreshBtn}>🔄</button>
-        </div>
-      </div>
+    <section id="explorer" className="py-28 px-6 sm:px-10 lg:px-16">
+      <div className="max-w-7xl mx-auto">
+        <motion.div initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }} viewport={{ once: true }} className="text-center mb-12">
+          <p className="text-sm font-bold tracking-widest uppercase mb-4"
+            style={{ background: "linear-gradient(135deg, #06B6D4, #3B82F6)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Explorer</p>
+          <h2 className="block text-3xl sm:text-4xl lg:text-5xl font-bold text-[var(--color-text-primary)] mb-5 leading-tight">Dataset Explorer</h2>
+        </motion.div>
 
-      {/* Main layout */}
-      <div style={styles.mainLayout}>
-        {/* Image grid */}
-        <div style={styles.gridSection}>
-          <p style={styles.resultCount}>
-            {loading ? "Loading..." : `${images.length} dataset images`}
-          </p>
-          <div style={styles.grid}>
-            {images.map(img => (
-              <div key={img.image_id}
-                onClick={() => setSelectedImage(img)}
-                style={{
-                  ...styles.card,
-                  ...(selectedImage?.image_id === img.image_id ? styles.activeCard : {}),
-                }}>
-                <img src={api.imageUrl(img.id)} alt={img.image_id} style={styles.cardImg} />
-                <div style={styles.cardInfo}>
-                  <span style={styles.echdId}>{img.image_id}</span>
-                  <span style={{
-                    ...styles.statusBadge,
-                    background: img.annotation_status === "Pending" ? "rgba(245, 158, 11, 0.15)" : "rgba(16, 185, 129, 0.15)",
-                    color: img.annotation_status === "Pending" ? "#f59e0b" : "#10b981",
-                  }}>
-                    {img.annotation_status === "Pending" ? "⏳" : "✅"} {img.annotation_status}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Detail panel */}
-        {selectedImage && (
-          <div style={styles.detailPanel}>
-            <h4 style={styles.detailTitle}>{selectedImage.image_id}</h4>
-            <img src={api.imageUrl(selectedImage.id)} alt={selectedImage.image_id} style={styles.detailImg} />
-            <div style={styles.detailMeta}>
-              <MetaRow label="Image ID" value={selectedImage.image_id} mono />
-              <MetaRow label="Sequence" value={selectedImage.sequence_id} />
-              <MetaRow label="Subject" value={selectedImage.subject} />
-              <MetaRow label="Board Type" value={selectedImage.board_type} />
-              <MetaRow label="Writer" value={selectedImage.writer_id} />
-              <MetaRow label="Frame Index" value={selectedImage.frame_index} />
-              <MetaRow label="Timestamp" value={`${selectedImage.timestamp_ms}ms`} />
-              <MetaRow label="Status" value={selectedImage.annotation_status}
-                color={selectedImage.annotation_status === "Pending" ? "#f59e0b" : "#10b981"} />
-              <MetaRow label="Version" value={selectedImage.dataset_version} />
-              <MetaRow label="Uploaded By" value={selectedImage.uploaded_by} />
-              <MetaRow label="Created" value={selectedImage.created_at?.slice(0, 19)} />
-              <MetaRow label="Storage Path" value={selectedImage.image_path} mono />
-            </div>
-            <button onClick={() => handleDeleteImage(selectedImage.image_id)} style={styles.deleteBtn}>
-              🗑 Delete Image
+        {/* Filters */}
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-4 mb-6">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Search size={14} className="text-[var(--color-text-muted)]" />
+            <select value={filterSubject} onChange={e => setFilterSubject(e.target.value)} className={selectClass}>
+              <option value="">All Subjects</option>
+              {subjects.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className={selectClass}>
+              <option value="">All Status</option>
+              <option value="Pending">Pending</option>
+              <option value="Completed">Completed</option>
+            </select>
+            <select value={filterVersion} onChange={e => setFilterVersion(e.target.value)} className={selectClass}>
+              <option value="">All Versions</option>
+              {versions.map(v => <option key={v.version} value={v.version}>{v.version}</option>)}
+            </select>
+            <select value={filterWriter} onChange={e => setFilterWriter(e.target.value)} className={selectClass}>
+              <option value="">All Writers</option>
+              {writers.map(w => <option key={w} value={w}>{w}</option>)}
+            </select>
+            <button onClick={loadImages} className="p-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] cursor-pointer transition-colors">
+              <RefreshCw size={14} />
             </button>
           </div>
-        )}
-      </div>
+        </div>
 
-      {/* Version Management */}
-      <div style={styles.versionSection}>
-        <h4 style={styles.sectionTitle}>📦 Dataset Versions</h4>
-        <div style={styles.versionGrid}>
-          {versions.map(v => (
-            <div key={v.version} style={styles.versionCard}>
-              <span style={styles.versionName}>{v.version}</span>
-              <span style={styles.versionMeta}>{v.image_count} images · {v.created_at?.slice(0, 10)}</span>
-              {v.description && <span style={styles.versionDesc}>{v.description}</span>}
+        {/* Main Layout */}
+        <div className="flex gap-5 flex-col lg:flex-row">
+          {/* Grid */}
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-[var(--color-text-muted)] mb-3">
+              {loading ? "Loading…" : `${images.length} dataset images`}
+            </p>
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3">
+              {images.slice(0, visibleCount).map(img => (
+                <motion.div
+                  key={img.image_id}
+                  onClick={() => setSelectedImage(img)}
+                  whileHover={{ y: -3 }}
+                  className={`rounded-xl overflow-hidden border bg-[var(--color-bg-card)] cursor-pointer transition-all duration-200 ${
+                    selectedImage?.image_id === img.image_id
+                      ? "border-[var(--color-accent)] shadow-lg shadow-blue-500/10"
+                      : "border-[var(--color-border)] hover:border-[var(--color-border)]/80"
+                  }`}
+                >
+                  <img src={api.imageUrl(img.id)} alt={img.image_id} className="w-full aspect-video object-cover" />
+                  <div className="p-2.5">
+                    <p className="text-[10px] font-mono font-bold text-[var(--color-accent-cyan)] truncate">{img.image_id}</p>
+                    <span className={`inline-block mt-1.5 text-[10px] font-medium px-2 py-0.5 rounded-md ${
+                      img.annotation_status === "Pending"
+                        ? "bg-[var(--color-accent-amber)]/10 text-[var(--color-accent-amber)]"
+                        : "bg-[var(--color-accent-green)]/10 text-[var(--color-accent-green)]"
+                    }`}>
+                      {img.annotation_status}
+                    </span>
+                  </div>
+                </motion.div>
+              ))}
             </div>
-          ))}
-          {versions.length === 0 && (
-            <p style={{ color: "#64748b", fontSize: 13, margin: 0 }}>No versions created yet. Images default to ECHD_v1.</p>
-          )}
+            {visibleCount < images.length && (
+              <div className="mt-8 text-center">
+                <button
+                  onClick={() => setVisibleCount(prev => prev + 12)}
+                  className="px-6 py-2.5 rounded-xl text-sm font-semibold border border-[var(--color-border)] bg-[var(--color-bg-card)] text-[var(--color-text-primary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-all cursor-pointer"
+                >
+                  Load More ({images.length - visibleCount} remaining)
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Detail Panel */}
+          <AnimatePresence>
+            {selectedImage && (
+              <motion.div
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 20 }}
+                className="lg:w-80 shrink-0 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-5 max-h-[75vh] overflow-auto"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="text-sm font-bold font-mono text-[var(--color-accent-cyan)]">{selectedImage.image_id}</h4>
+                  <button onClick={() => setSelectedImage(null)} className="p-1 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] cursor-pointer bg-transparent border-none">
+                    <X size={16} />
+                  </button>
+                </div>
+                <img src={api.imageUrl(selectedImage.id)} alt={selectedImage.image_id} className="w-full rounded-lg mb-4" />
+                <div className="space-y-1">
+                  {[
+                    { l: "Image ID", v: selectedImage.image_id, mono: true },
+                    { l: "Sequence", v: selectedImage.sequence_id },
+                    { l: "Subject", v: selectedImage.subject },
+                    { l: "Board Type", v: selectedImage.board_type },
+                    { l: "Writer", v: selectedImage.writer_id },
+                    { l: "Frame Index", v: selectedImage.frame_index },
+                    { l: "Timestamp", v: `${selectedImage.timestamp_ms}ms` },
+                    { l: "Status", v: selectedImage.annotation_status, color: selectedImage.annotation_status === "Pending" ? "var(--color-accent-amber)" : "var(--color-accent-green)" },
+                    { l: "Version", v: selectedImage.dataset_version },
+                    { l: "Uploaded By", v: selectedImage.uploaded_by },
+                    { l: "Created", v: selectedImage.created_at?.slice(0, 19) },
+                    { l: "Storage Path", v: selectedImage.image_path, mono: true },
+                  ].map(m => (
+                    <div key={m.l} className="flex justify-between py-1.5 border-b border-[var(--color-border)]/50">
+                      <span className="text-[11px] text-[var(--color-text-muted)]">{m.l}</span>
+                      <span className={`text-[11px] max-w-[55%] truncate text-right ${m.mono ? "font-mono" : ""}`} style={{ color: m.color || "var(--color-text-secondary)" }}>{m.v}</span>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => handleDeleteImage(selectedImage.image_id)} className="mt-4 w-full py-2 rounded-lg text-xs font-semibold border border-[var(--color-accent-rose)]/20 bg-[var(--color-accent-rose)]/8 text-[var(--color-accent-rose)] hover:bg-[var(--color-accent-rose)]/15 cursor-pointer transition-colors flex items-center justify-center gap-1.5">
+                  <Trash2 size={13} /> Delete Image
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
-        <div style={styles.createVersion}>
-          <input value={newVersionDesc} onChange={e => setNewVersionDesc(e.target.value)}
-            placeholder="Version description (optional)" style={styles.versionInput} />
-          <button onClick={handleCreateVersion} style={styles.createBtn}>Create New Version</button>
+
+        {/* Version Management */}
+        <div className="mt-8 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-card)] p-5">
+          <h4 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider mb-4 flex items-center gap-2">
+            <Package size={14} /> Dataset Versions
+          </h4>
+          <div className="flex gap-3 flex-wrap mb-4">
+            {versions.map(v => (
+              <div key={v.version} className="px-4 py-2.5 rounded-xl bg-[var(--color-accent-purple)]/8 border border-[var(--color-accent-purple)]/15">
+                <p className="text-sm font-bold text-[var(--color-accent-purple)]">{v.version}</p>
+                <p className="text-[10px] text-[var(--color-text-muted)] mt-0.5">{v.image_count} images · {v.created_at?.slice(0, 10)}</p>
+                {v.description && <p className="text-[10px] text-[var(--color-text-secondary)] italic mt-0.5">{v.description}</p>}
+              </div>
+            ))}
+            {versions.length === 0 && <p className="text-xs text-[var(--color-text-muted)]">No versions created yet. Images default to ECHD_v1.</p>}
+          </div>
+          <div className="flex gap-2">
+            <input value={newVersionDesc} onChange={e => setNewVersionDesc(e.target.value)}
+              placeholder="Version description (optional)"
+              className="flex-1 px-3 py-2 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-[var(--color-text-primary)] text-xs focus:border-[var(--color-accent)] focus:outline-none transition-colors" />
+            <button onClick={handleCreateVersion} className="px-4 py-2 rounded-lg text-xs font-semibold bg-gradient-to-r from-[var(--color-accent-purple)] to-[#7c3aed] text-white border-none cursor-pointer flex items-center gap-1.5">
+              <Plus size={13} /> Create Version
+            </button>
+          </div>
+          {versionMsg && <p className="text-xs text-[var(--color-accent-green)] mt-2">{versionMsg}</p>}
         </div>
-        {versionMsg && <p style={{ fontSize: 13, color: "#10b981", marginTop: 8 }}>{versionMsg}</p>}
       </div>
-    </div>
+    </section>
   );
 }
-
-function MetaRow({ label, value, mono, color }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #1e293b" }}>
-      <span style={{ fontSize: 12, color: "#64748b" }}>{label}</span>
-      <span style={{
-        fontSize: 12,
-        color: color || "#cbd5e1",
-        fontFamily: mono ? "monospace" : "inherit",
-        maxWidth: 180,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        textAlign: "right",
-      }}>{value}</span>
-    </div>
-  );
-}
-
-const styles = {
-  wrap: { display: "flex", flexDirection: "column", gap: 20 },
-  filterBar: {
-    background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-    border: "1px solid #1e293b",
-    borderRadius: 12,
-    padding: "16px 20px",
-  },
-  sectionTitle: { color: "#94a3b8", fontSize: 13, fontWeight: 600, margin: "0 0 10px 0" },
-  filters: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
-  select: {
-    background: "#0f172a", color: "#e2e8f0", border: "1px solid #334155",
-    borderRadius: 6, padding: "7px 10px", fontSize: 12,
-  },
-  refreshBtn: {
-    background: "#0f172a", border: "1px solid #334155", borderRadius: 6,
-    padding: "7px 12px", cursor: "pointer", fontSize: 14,
-  },
-  mainLayout: { display: "flex", gap: 20 },
-  gridSection: { flex: 1 },
-  resultCount: { color: "#64748b", fontSize: 13, margin: "0 0 10px 0" },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-    gap: 10,
-  },
-  card: {
-    background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-    border: "1px solid #1e293b",
-    borderRadius: 10,
-    overflow: "hidden",
-    cursor: "pointer",
-    transition: "border-color 0.2s, transform 0.15s",
-  },
-  activeCard: { borderColor: "#0ea5e9", transform: "scale(1.02)" },
-  cardImg: { width: "100%", aspectRatio: "16/9", objectFit: "cover" },
-  cardInfo: { padding: "6px 8px", display: "flex", flexDirection: "column", gap: 3 },
-  echdId: { fontSize: 11, color: "#22d3ee", fontFamily: "monospace", fontWeight: 600 },
-  statusBadge: {
-    fontSize: 10, borderRadius: 4, padding: "2px 6px",
-    display: "inline-block", width: "fit-content",
-  },
-  detailPanel: {
-    width: 300,
-    background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-    border: "1px solid #1e293b",
-    borderRadius: 12,
-    padding: "16px",
-    flexShrink: 0,
-    maxHeight: "70vh",
-    overflow: "auto",
-  },
-  detailTitle: { color: "#22d3ee", fontSize: 15, fontWeight: 700, fontFamily: "monospace", margin: "0 0 10px 0" },
-  detailImg: { width: "100%", borderRadius: 8, marginBottom: 12 },
-  detailMeta: { display: "flex", flexDirection: "column", gap: 2 },
-  deleteBtn: {
-    marginTop: 14, width: "100%", padding: "8px", borderRadius: 8,
-    border: "1px solid #ef4444", background: "rgba(239, 68, 68, 0.1)",
-    color: "#ef4444", cursor: "pointer", fontSize: 13, fontWeight: 600,
-  },
-  versionSection: {
-    background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-    border: "1px solid #1e293b",
-    borderRadius: 12,
-    padding: "16px 20px",
-  },
-  versionGrid: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 },
-  versionCard: {
-    background: "rgba(167, 139, 250, 0.08)",
-    border: "1px solid #334155",
-    borderRadius: 8,
-    padding: "10px 14px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 3,
-    minWidth: 140,
-  },
-  versionName: { fontSize: 14, fontWeight: 700, color: "#a78bfa" },
-  versionMeta: { fontSize: 11, color: "#64748b" },
-  versionDesc: { fontSize: 11, color: "#94a3b8", fontStyle: "italic" },
-  createVersion: { display: "flex", gap: 10 },
-  versionInput: {
-    flex: 1, background: "#0f172a", color: "#e2e8f0", border: "1px solid #334155",
-    borderRadius: 6, padding: "7px 10px", fontSize: 13,
-  },
-  createBtn: {
-    padding: "8px 18px", borderRadius: 8, border: "none",
-    background: "linear-gradient(135deg, #a78bfa, #7c3aed)", color: "#fff",
-    fontWeight: 600, cursor: "pointer", fontSize: 13,
-  },
-};

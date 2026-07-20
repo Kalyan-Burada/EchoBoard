@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Trash2, Download, StopCircle, FolderOpen, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "../api";
 
 export default function Library({ refreshKey }) {
@@ -27,35 +29,25 @@ export default function Library({ refreshKey }) {
     }).catch(() => setLoading(false));
   }, [refreshKey]);
 
-  // Auto-refresh when videos are processing
   useEffect(() => {
     const isProcessing = videos.some(v => v.processing);
     if (!isProcessing) return;
-
     const interval = setInterval(() => {
       api.getVideos().then(vs => {
         setVideos(vs);
         const curVideo = vs.find(v => v.id === selected);
         if (curVideo && (curVideo.processing || keyframes.length === 0)) {
           api.getKeyframes(selected).then(kfs => {
-            if (kfs.length !== keyframes.length) {
-              setKeyframes(kfs);
-            }
+            if (kfs.length !== keyframes.length) setKeyframes(kfs);
           });
         }
       });
     }, 3000);
-
     return () => clearInterval(interval);
   }, [videos, selected, keyframes]);
 
   async function stopProcessing(id) {
-    try {
-      await api.stopVideo(id);
-      api.getVideos().then(setVideos);
-    } catch (err) {
-      console.error(err);
-    }
+    try { await api.stopVideo(id); api.getVideos().then(setVideos); } catch (err) { console.error(err); }
   }
 
   async function handleDelete(id) {
@@ -69,60 +61,86 @@ export default function Library({ refreshKey }) {
     }
   }
 
-  if (loading) return <p style={{ color: "#94a3b8" }}>Loading dataset…</p>;
-  if (!videos.length) return <p style={{ color: "#94a3b8" }}>No videos yet. Upload one to start building the ECHD dataset.</p>;
-
   function downloadVideo(id) { window.open(api.videoZipUrl(id), "_blank"); }
   function downloadAll() { window.open(api.datasetZipUrl(), "_blank"); }
 
   const kf = keyframes[idx];
   const selectedVideo = videos.find(v => v.id === selected);
 
+  if (loading) return (
+    <div className="py-24 px-6 text-center">
+      <div className="w-6 h-6 border-2 border-[var(--color-accent)] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+      <p className="text-sm text-[var(--color-text-muted)]">Loading dataset…</p>
+    </div>
+  );
+
+  if (!videos.length) return (
+    <div className="py-24 px-6 text-center">
+      <FolderOpen size={40} className="mx-auto mb-4 text-[var(--color-text-muted)]" />
+      <p className="text-sm text-[var(--color-text-muted)]">No videos yet. Upload to start building the ECHD dataset.</p>
+    </div>
+  );
+
   return (
-    <div style={styles.wrap}>
+    <div className="py-8 flex gap-5 flex-col lg:flex-row">
       {/* Sidebar */}
-      <div style={styles.sidebar}>
-        <h4 style={styles.sidebarTitle}>📁 Source Videos</h4>
+      <div className="lg:w-60 shrink-0 space-y-2">
+        <h4 className="text-xs font-semibold text-[var(--color-text-muted)] uppercase tracking-wider mb-3">Source Videos</h4>
         {videos.map(v => (
-          <div key={v.id} onClick={() => selectVideo(v.id)}
-            style={{ ...styles.videoItem, ...(selected === v.id ? styles.activeItem : {}) }}>
-            <span style={styles.videoName}>{v.filename}</span>
-            <span style={styles.meta}>
+          <motion.div
+            key={v.id}
+            onClick={() => selectVideo(v.id)}
+            whileHover={{ x: 2 }}
+            className={`relative p-3 rounded-xl cursor-pointer transition-all duration-200 ${
+              selected === v.id
+                ? "bg-[var(--color-accent)]/10 border border-[var(--color-accent)]/30"
+                : "border border-[var(--color-border)] bg-[var(--color-bg-card)] hover:border-[var(--color-border)]/80"
+            }`}
+          >
+            <p className="text-sm font-medium text-[var(--color-text-primary)] pr-6 truncate">{v.filename}</p>
+            <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
               {v.processing ? (
-                <span style={{ color: "#38bdf8", fontWeight: 600 }}>⏳ Processing...</span>
+                <span className="text-[var(--color-accent)] font-semibold">⏳ Processing…</span>
               ) : v.fps === 0 ? (
                 `${v.total_frames} images · ${(v.uploaded_at || "").slice(0, 10)}`
               ) : (
                 `${(v.duration_sec || 0).toFixed(1)}s · ${(v.uploaded_at || "").slice(0, 10)}`
               )}
-            </span>
-            <button onClick={e => { e.stopPropagation(); handleDelete(v.id); }} style={styles.delBtn}>🗑</button>
-          </div>
+            </p>
+            <button
+              onClick={e => { e.stopPropagation(); handleDelete(v.id); }}
+              className="absolute top-3 right-3 p-1 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-accent-rose)] hover:bg-[var(--color-accent-rose)]/10 transition-colors cursor-pointer bg-transparent border-none"
+            >
+              <Trash2 size={13} />
+            </button>
+          </motion.div>
         ))}
       </div>
 
-      {/* Main viewer */}
-      <div style={styles.viewer}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <h4 style={{ color: "#e2e8f0", margin: 0, fontSize: 15 }}>
+      {/* Main Viewer */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">
             {keyframes.length > 0 ? `${keyframes.length} Dataset Images` : "Dataset Images"}
           </h4>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => downloadVideo(selected)} style={styles.dlBtnSm}>⬇️ This Sequence</button>
-            <button onClick={downloadAll} style={styles.dlBtn}>⬇️ Full ECHD Dataset</button>
+          <div className="flex gap-2">
+            <button onClick={() => downloadVideo(selected)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-[var(--color-border)] bg-[var(--color-bg-card)] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors cursor-pointer">
+              <Download size={13} /> Sequence
+            </button>
+            <button onClick={downloadAll} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-cyan)] text-white border-none cursor-pointer">
+              <Download size={13} /> Full Dataset
+            </button>
           </div>
         </div>
 
         {keyframes.length === 0 && (
-          <div style={styles.emptyState}>
-            <p style={{ color: selectedVideo?.processing ? "#38bdf8" : "#64748b", margin: 0, fontSize: 14 }}>
-              {selectedVideo?.processing
-                ? "⏳ Downloading and processing video... Dataset images will appear here automatically."
-                : "No dataset images for this video."}
+          <div className="border border-dashed border-[var(--color-border)] rounded-xl p-8 text-center">
+            <p className="text-sm text-[var(--color-text-muted)]">
+              {selectedVideo?.processing ? "Processing… images will appear automatically." : "No images for this video."}
             </p>
             {selectedVideo?.processing && (
-              <button onClick={() => stopProcessing(selectedVideo.id)} style={styles.stopBtn}>
-                ⏹ Stop Processing
+              <button onClick={() => stopProcessing(selectedVideo.id)} className="mt-3 px-4 py-2 rounded-lg text-xs font-semibold bg-[var(--color-accent-rose)]/10 text-[var(--color-accent-rose)] border border-[var(--color-accent-rose)]/20 cursor-pointer hover:bg-[var(--color-accent-rose)]/20 transition-colors">
+                <StopCircle size={13} className="inline mr-1" /> Stop Processing
               </button>
             )}
           </div>
@@ -130,32 +148,50 @@ export default function Library({ refreshKey }) {
 
         {kf && (
           <>
-            <img src={api.imageUrl(kf.id)} alt={`frame ${kf.frame_index}`} style={styles.img} />
-
-            {/* Metadata panel */}
-            <div style={styles.metaPanel}>
-              <MetaItem label="ECHD ID" value={kf.image_id} highlight />
-              <MetaItem label="Sequence" value={kf.sequence_id} />
-              <MetaItem label="Subject" value={kf.subject} />
-              <MetaItem label="Board" value={kf.board_type} />
-              <MetaItem label="Writer" value={kf.writer_id} />
-              <MetaItem label="Frame" value={kf.frame_index} />
-              <MetaItem label="Time" value={`${kf.timestamp_ms}ms`} />
-              <MetaItem label="Status" value={kf.annotation_status}
-                color={kf.annotation_status === "Pending" ? "#f59e0b" : "#10b981"} />
-              <MetaItem label="Version" value={kf.dataset_version} />
+            <div className="rounded-xl overflow-hidden border border-[var(--color-border)] bg-[var(--color-bg-primary)] mb-3">
+              <img src={api.imageUrl(kf.id)} alt={`frame ${kf.frame_index}`} className="w-full max-h-[420px] object-contain" />
             </div>
 
-            <input type="range" min={0} max={keyframes.length - 1} value={idx}
-              onChange={e => setIdx(parseInt(e.target.value))} style={styles.timeline} />
-            <p style={styles.counter}>{idx + 1} / {keyframes.length}</p>
+            {/* Metadata Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-3">
+              {[
+                { l: "ECHD ID", v: kf.image_id, accent: true },
+                { l: "Sequence", v: kf.sequence_id },
+                { l: "Subject", v: kf.subject },
+                { l: "Board", v: kf.board_type },
+                { l: "Writer", v: kf.writer_id },
+                { l: "Frame", v: kf.frame_index },
+                { l: "Time", v: `${kf.timestamp_ms}ms` },
+                { l: "Status", v: kf.annotation_status, color: kf.annotation_status === "Pending" ? "var(--color-accent-amber)" : "var(--color-accent-green)" },
+              ].map(m => (
+                <div key={m.l} className="px-3 py-2 rounded-lg bg-[var(--color-bg-card)] border border-[var(--color-border)]">
+                  <p className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">{m.l}</p>
+                  <p className={`text-xs font-medium mt-0.5 truncate ${m.accent ? "text-[var(--color-accent-cyan)] font-mono font-bold" : ""}`} style={m.color ? { color: m.color } : {}}>{m.v}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Timeline */}
+            <div className="flex items-center gap-3 mb-3">
+              <button onClick={() => setIdx(Math.max(0, idx - 1))} className="p-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-card)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] cursor-pointer transition-colors">
+                <ChevronLeft size={16} />
+              </button>
+              <input type="range" min={0} max={keyframes.length - 1} value={idx}
+                onChange={e => setIdx(parseInt(e.target.value))} className="flex-1" />
+              <button onClick={() => setIdx(Math.min(keyframes.length - 1, idx + 1))} className="p-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-card)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] cursor-pointer transition-colors">
+                <ChevronRight size={16} />
+              </button>
+              <span className="text-xs text-[var(--color-text-muted)] tabular-nums">{idx + 1}/{keyframes.length}</span>
+            </div>
 
             {/* Thumbnail Grid */}
-            <div style={styles.grid}>
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(80px,1fr))] gap-1.5">
               {keyframes.map((k, i) => (
                 <img key={k.id} src={api.imageUrl(k.id)} alt=""
                   onClick={() => setIdx(i)}
-                  style={{ ...styles.thumb, ...(i === idx ? styles.activeThumb : {}) }} />
+                  className={`w-full aspect-video object-cover rounded-lg cursor-pointer border-2 transition-all ${
+                    i === idx ? "border-[var(--color-accent)] shadow-md shadow-blue-500/10" : "border-transparent hover:border-[var(--color-border)]"
+                  }`} />
               ))}
             </div>
           </>
@@ -164,71 +200,3 @@ export default function Library({ refreshKey }) {
     </div>
   );
 }
-
-function MetaItem({ label, value, highlight, color }) {
-  return (
-    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-      <span style={{ fontSize: 11, color: "#64748b", minWidth: 60 }}>{label}:</span>
-      <span style={{
-        fontSize: 12,
-        color: color || (highlight ? "#22d3ee" : "#cbd5e1"),
-        fontWeight: highlight ? 700 : 400,
-        fontFamily: highlight ? "monospace" : "inherit",
-      }}>{value}</span>
-    </div>
-  );
-}
-
-const styles = {
-  wrap: { display: "flex", gap: 20 },
-  sidebar: { width: 240, display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 },
-  sidebarTitle: { color: "#94a3b8", fontSize: 13, fontWeight: 600, margin: "0 0 8px 0" },
-  videoItem: {
-    background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-    border: "1px solid #1e293b",
-    borderRadius: 10, padding: "10px 12px",
-    cursor: "pointer", position: "relative", display: "flex", flexDirection: "column", gap: 2,
-    transition: "border-color 0.2s",
-  },
-  activeItem: { border: "2px solid #0ea5e9" },
-  videoName: { fontSize: 13, color: "#e2e8f0", fontWeight: 600, wordBreak: "break-word" },
-  meta: { fontSize: 11, color: "#64748b" },
-  delBtn: { position: "absolute", top: 8, right: 8, background: "none", border: "none", cursor: "pointer", fontSize: 14 },
-  viewer: { flex: 1 },
-  img: { width: "100%", borderRadius: 12, maxHeight: 420, objectFit: "contain", background: "#0f172a", border: "1px solid #1e293b" },
-  metaPanel: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))",
-    gap: "6px 16px",
-    background: "rgba(14, 165, 233, 0.06)",
-    border: "1px solid #1e293b",
-    borderRadius: 10,
-    padding: "12px 16px",
-    margin: "10px 0",
-  },
-  timeline: { width: "100%", margin: "4px 0" },
-  counter: { color: "#64748b", fontSize: 12, textAlign: "right", margin: "2px 0 10px" },
-  dlBtn: {
-    padding: "7px 14px", borderRadius: 8, border: "none",
-    background: "linear-gradient(135deg, #0ea5e9, #06b6d4)", color: "#fff",
-    fontWeight: 600, cursor: "pointer", fontSize: 12,
-  },
-  dlBtnSm: {
-    padding: "7px 14px", borderRadius: 8, border: "1px solid #334155",
-    background: "#0f172a", color: "#94a3b8", cursor: "pointer", fontSize: 12,
-  },
-  emptyState: {
-    display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start",
-    padding: "28px 20px",
-    background: "rgba(100, 116, 139, 0.06)",
-    border: "1px dashed #334155",
-    borderRadius: 12,
-  },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 6 },
-  thumb: { width: "100%", aspectRatio: "16/9", objectFit: "cover", borderRadius: 6, cursor: "pointer", border: "2px solid transparent" },
-  activeThumb: { border: "2px solid #0ea5e9" },
-  stopBtn: {
-    background: "#ef4444", color: "#fff", border: "none", borderRadius: 8,
-    padding: "8px 16px", cursor: "pointer", fontSize: 13, fontWeight: 600,
-  },
-};
