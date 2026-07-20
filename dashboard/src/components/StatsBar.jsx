@@ -33,15 +33,21 @@ const container = { hidden: {}, show: { transition: { staggerChildren: 0.08 } } 
 const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0, transition: { duration: 0.4 } } };
 
 export default function StatsBar() {
-  const [stats, setStats] = useState(null);
+  const [stats, setStats] = useState({
+    total_videos: 0,
+    total_images: 0,
+    pending_annotations: 0,
+    completed_annotations: 0,
+    current_version: "v1.0.0"
+  });
   const ref = useRef(null);
   const inView = useInView(ref, { once: true, margin: "-50px" });
 
   useEffect(() => {
-    api.getStats().then(setStats).catch(() => {});
+    api.getStats().then((res) => {
+      if (res) setStats(res);
+    }).catch(() => {});
   }, []);
-
-  if (!stats) return null;
 
   return (
     <section id="statistics" className="py-28 px-6 sm:px-10 lg:px-16" ref={ref}>
