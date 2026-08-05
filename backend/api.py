@@ -89,6 +89,12 @@ class VersionRequest(BaseModel):
     description: str = ""
 
 
+class AnnotationUpdateRequest(BaseModel):
+    annotation_text: str = ""
+    annotation_class: str = "Text"
+    reviewed: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Dashboard Stats
 # ---------------------------------------------------------------------------
@@ -592,6 +598,142 @@ def delete_dataset_image(image_id: str):
         pass
     db.delete_dataset_image(image_id)
     return {"message": f"Deleted {image_id}"}
+
+
+_rapid_ocr_engine = None
+
+def _get_ocr_engine():
+    global _rapid_ocr_engine
+    if _rapid_ocr_engine is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _rapid_ocr_engine = RapidOCR()
+        except Exception:
+            _rapid_ocr_engine = False
+    return _rapid_ocr_engine
+
+
+def _run_ocr_on_bytes(image_bytes: bytes) -> str:
+    """Run AI OCR to extract visible handwritten/printed text from image bytes."""
+    if not image_bytes:
+        return ""
+
+    import cv2
+    import numpy as np
+
+    try:
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    except Exception:
+        img = None
+
+    if img is None:
+        return ""
+
+    # 1. Primary OCR: RapidOCR (Deep Learning ONNX engine)
+    engine = _get_ocr_engine()
+    if engine:
+        try:
+            # Run OCR on original image
+            result, _ = engine(img)
+            extracted_lines = []
+            if result:
+                for line in result:
+                    if len(line) >= 2 and line[1] and line[1].strip():
+                        extracted_lines.append(str(line[1]).strip())
+
+            # If faint text/chalk on blackboard, apply CLAHE contrast enhancement & run again
+            if not extracted_lines:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+                enhanced = clahe.apply(gray)
+                enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                result_enh, _ = engine(enhanced_bgr)
+                if result_enh:
+                    for line in result_enh:
+                        if len(line) >= 2 and line[1] and line[1].strip():
+                            extracted_lines.append(str(line[1]).strip())
+
+            if extracted_lines:
+                return "\n".join(extracted_lines)
+        except Exception as e:
+            print(f"RapidOCR error: {e}")
+
+    # 2. Secondary Fallback: EasyOCR
+    try:
+        import easyocr
+        reader = easyocr.Reader(['en'], gpu=False)
+        results = reader.readtext(img, detail=0)
+        if results:
+            return "\n".join(results)
+    except Exception:
+        pass
+
+    # 3. Tertiary Fallback: Pytesseract
+    try:
+        import pytesseract
+        from PIL import Image
+        pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        text = pytesseract.image_to_string(pil_img)
+        if text.strip():
+            return text.strip()
+    except Exception:
+        pass
+
+    return "No clear text detected"
+
+
+@app.post("/api/dataset/images/{image_id}/ocr")
+def run_ocr_on_image(image_id: str):
+    """Run OCR auto-annotation on a dataset image."""
+    record = db.get_dataset_image_by_internal_id(image_id) or db.get_dataset_image_by_id(image_id)
+    if not record:
+        raise HTTPException(404, "Dataset image not found")
+
+    image_bytes = storage.get_image(record.get("image_path", ""))
+    extracted_text = _run_ocr_on_bytes(image_bytes)
+
+    target_id = record.get("image_id", image_id)
+    db.update_dataset_image_annotation(
+        image_id=target_id,
+        annotation_text=extracted_text,
+        annotation_class="Text",
+        reviewed=False,
+    )
+
+    return {
+        "image_id": target_id,
+        "ocr_text": extracted_text,
+        "status": "ocr_completed",
+        "reviewed": False,
+    }
+
+
+@app.put("/api/dataset/images/{image_id}/annotation")
+def update_image_annotation(image_id: str, req: AnnotationUpdateRequest):
+    """Update and verify human annotations for a dataset image."""
+    record = db.get_dataset_image_by_internal_id(image_id) or db.get_dataset_image_by_id(image_id)
+    if not record:
+        raise HTTPException(404, "Dataset image not found")
+
+    target_id = record.get("image_id", image_id)
+    success = db.update_dataset_image_annotation(
+        image_id=target_id,
+        annotation_text=req.annotation_text,
+        annotation_class=req.annotation_class,
+        reviewed=req.reviewed,
+    )
+
+    if not success:
+        raise HTTPException(500, "Failed to update annotation in database")
+
+    return {
+        "image_id": target_id,
+        "annotation_text": req.annotation_text,
+        "annotation_class": req.annotation_class,
+        "reviewed": req.reviewed,
+        "status": "updated",
+    }
 
 
 # ---------------------------------------------------------------------------

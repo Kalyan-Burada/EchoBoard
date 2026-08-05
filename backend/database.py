@@ -80,7 +80,7 @@ def init_db():
             db.counters.insert_one({"_id": "image_counter", "seq": 0})
         if db.counters.find_one({"_id": "annotation_counter"}) is None:
             db.counters.insert_one({"_id": "annotation_counter", "seq": 0})
-        print(f"  Database: MongoDB Atlas — '{DB_NAME}' ✓ Connected")
+        print(f"  Database: MongoDB Atlas — '{DB_NAME}' [OK] Connected")
     except Exception as e:
         # Reset client so get_db() will retry on next call
         global _client
@@ -220,6 +220,48 @@ def get_dataset_image_by_internal_id(internal_id):
 def delete_dataset_image(image_id):
     db = get_db()
     db.dataset_images.delete_one({"image_id": image_id})
+
+
+def update_dataset_image_annotation(image_id: str, annotation_text: str, annotation_class: str = "Text", reviewed: bool = True):
+    """Update annotation text, class, and review status for a dataset image."""
+    db = get_db()
+
+    # Try matching by image_id or ObjectId
+    doc = db.dataset_images.find_one({"image_id": image_id})
+    filter_query = {"image_id": image_id}
+    if not doc:
+        try:
+            filter_query = {"_id": ObjectId(image_id)}
+            doc = db.dataset_images.find_one(filter_query)
+        except Exception:
+            pass
+
+    if not doc:
+        return False
+
+    ann_id = _next_annotation_id()
+    ann = {
+        "annotation_id": ann_id,
+        "class": annotation_class,
+        "bbox": [],
+        "text": annotation_text.strip(),
+        "latex": "",
+        "confidence": 1.0 if reviewed else 0.8,
+    }
+
+    db.dataset_images.update_one(
+        filter_query,
+        {
+            "$set": {
+                "annotations": [ann],
+                "processing_status.ocr_completed": True,
+                "processing_status.annotation_completed": bool(annotation_text.strip()),
+                "processing_status.reviewed": reviewed,
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+            }
+        }
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
