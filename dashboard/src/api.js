@@ -43,6 +43,13 @@ export const api = {
   },
   getDatasetImage: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}`).then(r => r.json()),
   deleteDatasetImage: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}`, { method: "DELETE" }).then(r => r.json()),
+  runOcr: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}/ocr`, { method: "POST" }).then(r => r.json()),
+  updateAnnotation: (imageId, text, annotationClass = "Text", reviewed = true) =>
+    fetch(`${BASE}/api/dataset/images/${imageId}/annotation`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ annotation_text: text, annotation_class: annotationClass, reviewed }),
+    }).then(r => r.json()),
 
   // Dataset versions
   getVersions: () => fetch(`${BASE}/api/dataset/versions`).then(r => r.json()),
