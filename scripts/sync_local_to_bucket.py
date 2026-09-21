@@ -1,11 +1,14 @@
 """
 sync_local_to_bucket.py
-Migrate locally stored dataset images into the shared S3-compatible bucket.
+Migrate locally stored dataset images into the shared Supabase Storage bucket.
 
-Use this once after switching STORAGE_BACKEND from 'local' to 's3': any
-images previously written to dataset/echoboard-dataset/ are uploaded to the
-shared bucket so collaborators can read them. Objects that already exist in
+Use this once after switching STORAGE_BACKEND from 'local' to 'supabase':
+any images previously written to dataset/echoboard-dataset/ are uploaded to
+the shared bucket so collaborators can read them. Objects already present in
 the bucket are skipped, so the script is safe to re-run.
+
+Note this syncs image BYTES only. Metadata rows written while the backend
+pointed at a different database are not migrated.
 
 Usage:
     python scripts/sync_local_to_bucket.py             # upload missing images
@@ -13,7 +16,6 @@ Usage:
 """
 
 import argparse
-import io
 import os
 import sys
 
@@ -47,10 +49,10 @@ def main():
 
     print("=== EchoBoard local-to-bucket sync ===")
 
-    if storage.STORAGE_BACKEND != "s3":
+    if storage.STORAGE_BACKEND != "supabase":
         print(
-            f"\n  STORAGE_BACKEND is '{storage.STORAGE_BACKEND}', not 's3'.\n"
-            "  Set STORAGE_BACKEND=s3 in .env before syncing.\n"
+            f"\n  STORAGE_BACKEND is '{storage.STORAGE_BACKEND}', not 'supabase'.\n"
+            "  Set STORAGE_BACKEND=supabase in .env before syncing.\n"
             "  See docs/SHARED_SETUP.md."
         )
         return 1
@@ -70,17 +72,13 @@ def main():
     local_files = collect_local_images(local_dir)
     print(f"Found {len(local_files)} local image(s).")
 
-    client = storage._get_s3_client()
-    bucket = storage.S3_BUCKET
-
+    existing = set(storage.list_images())
     uploaded = skipped = failed = 0
+
     for object_path, full_path in local_files:
-        try:
-            client.stat_object(bucket, object_path)
+        if object_path in existing:
             skipped += 1
             continue
-        except Exception:
-            pass  # Object is absent; upload it below.
 
         if args.dry_run:
             print(f"  would upload: {object_path}")
@@ -90,13 +88,7 @@ def main():
         try:
             with open(full_path, "rb") as fh:
                 data = fh.read()
-            client.put_object(
-                bucket,
-                object_path,
-                io.BytesIO(data),
-                length=len(data),
-                content_type=storage._content_type(object_path),
-            )
+            storage.store_object(object_path, data)
             print(f"  uploaded: {object_path}")
             uploaded += 1
         except Exception as exc:

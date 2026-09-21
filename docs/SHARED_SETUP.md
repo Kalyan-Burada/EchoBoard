@@ -4,25 +4,25 @@ This guide configures EchoBoard so that **two or more people share one
 dataset without anyone having to keep a server running.** Uploads made by
 one person are immediately visible to everyone else.
 
+Everything lives in a single **Supabase** project: image metadata in
+PostgreSQL, and the image files in Supabase Storage. One account, one set of
+credentials, no card required on the free tier.
+
 ## Why no one needs to host anything
 
 EchoBoard has three moving parts, and only the first two hold state:
 
 | Component | Location | Shared? |
 |---|---|---|
-| **MongoDB Atlas** — dataset metadata (ECHD schema) | Managed cloud | Yes, one cluster for the team |
-| **Object storage** — the keyframe images | Managed cloud bucket | Yes, one bucket for the team |
+| **Supabase Postgres** — dataset metadata (ECHD schema) | Managed cloud | Yes, one project for the team |
+| **Supabase Storage** — the keyframe images | Managed cloud | Yes, same project |
 | **FastAPI backend + dashboard** | Each person's own machine | No — and it doesn't need to be |
 
-The backend is **stateless**: it holds no dataset of its own, and only
-translates between the browser and those two cloud services. Two people can
-therefore run their own local copy at the same time, pointed at the same
-cloud resources, and see identical data. Nobody is the "host", and no
-machine has to stay awake for the other person.
-
-This replaces the earlier arrangement, where images lived in a MinIO server
-on one laptop. That required the laptop's owner to keep a terminal running,
-and broke whenever they closed it.
+The backend is **stateless**: it holds no dataset of its own and only
+translates between the browser and Supabase. Two people can therefore run
+their own local copy at the same time, pointed at the same project, and see
+identical data. Nobody is the "host", and no machine has to stay awake for
+the other person.
 
 ```
   Person A                          Person B
@@ -34,46 +34,65 @@ and broke whenever they closed it.
            └────────────┬────────────────────┘
                         ▼
          ┌──────────────────────────────┐
-         │  MongoDB Atlas  (metadata)   │
-         │  Object bucket  (images)     │
+         │  Supabase project            │
+         │   • Postgres  (metadata)     │
+         │   • Storage   (images)       │
          └──────────────────────────────┘
 ```
 
+### Free-tier limits worth knowing
+
+The Supabase free tier includes **500 MB of database** and **1 GB of file
+storage**, and pauses a project after a week of inactivity (one click
+resumes it). Metadata rows are tiny, so storage is the ceiling that matters:
+roughly 3,000–10,000 keyframes at typical classroom-board JPEG sizes. Check
+**Project Settings > Usage** as the dataset grows.
+
 ## One-time setup (done once, by one person)
 
-### 1. MongoDB Atlas
+### 1. Create the Supabase project
 
-1. Create a free **M0** cluster at <https://www.mongodb.com/atlas>.
-2. **Database Access** → add a database user; save the password.
-3. **Network Access** → add the IP addresses of everyone on the team.
-   `0.0.0.0/0` works but allows connections from anywhere; prefer listing
-   real addresses where you can.
-4. **Connect → Drivers** → copy the `mongodb+srv://...` connection string.
+1. Sign up at <https://supabase.com> and create a new project.
+2. Choose a region near you and save the database password Supabase
+   generates (you will not need it for EchoBoard, but losing it is
+   inconvenient).
+3. Wait for provisioning to finish — about two minutes.
 
-### 2. Object storage bucket
+### 2. Apply the database schema
 
-Any S3-compatible provider works, since EchoBoard talks to all of them
-through one client. **Cloudflare R2** is the recommended default: its free
-tier includes 10 GB of storage and, unlike most alternatives, charges
-nothing for egress — which matters because annotation and dataset export
-read images repeatedly.
+1. Open **SQL Editor** in the Supabase dashboard.
+2. Paste the entire contents of [`supabase/schema.sql`](../supabase/schema.sql)
+   and press **Run**.
 
-1. In the Cloudflare dashboard, open **R2** and create a bucket named
-   `echoboard-dataset`.
-2. Go to **R2 → API → Manage API Tokens** and create a token with
-   **Object Read & Write** permission, scoped to that bucket.
-3. Record the **Access Key ID**, **Secret Access Key**, and your
-   **Account ID** (the endpoint is `<account-id>.r2.cloudflarestorage.com`).
+This creates four tables (`dataset_images`, `annotations`, `videos`,
+`dataset_versions`), their indexes, and the two ID-generating functions. The
+script is idempotent, so re-running it is harmless.
 
-Equivalent alternatives: **Backblaze B2** (10 GB free; egress capped at 3×
-stored bytes per day) or **Amazon S3**. For either, set `S3_ENDPOINT` and
-`S3_REGION` to that provider's values — no code changes are needed.
+Row Level Security is enabled with no policies, which means anonymous and
+signed-in browser clients cannot touch these tables. The backend uses the
+`service_role` key, which bypasses RLS by design.
 
-### 3. Share the credentials
+### 3. Collect the credentials
 
-Send the connection string and the three bucket values to your teammate
-over a private channel. **Never commit them** — `.env` is gitignored, and
-the repository contains only `.env.example`.
+From **Project Settings > API**, copy:
+
+- **Project URL** — `https://<project-ref>.supabase.co`
+- **`service_role` key** (under Project API keys, "reveal")
+
+The `service_role` key is a full administrative credential. Keep it
+server-side, never put it in the dashboard/frontend, and never commit it.
+Do **not** use the `anon` key: RLS will reject it.
+
+### 4. Share the credentials
+
+Send the project URL and `service_role` key to your teammate over a private
+channel. **Never commit them** — `.env` is gitignored and the repository
+contains only `.env.example`.
+
+The storage bucket is created automatically on first backend start. If your
+key is not permitted to create buckets, make one manually in
+**Storage > New bucket**, name it `echoboard-dataset`, and keep it
+**private**.
 
 ## Per-person setup (each collaborator, on their own machine)
 
@@ -88,19 +107,14 @@ pip install -r requirements.txt
 cp .env.example .env              # then fill in the shared values
 ```
 
-Fill in `.env` with the values from the one-time setup:
+Fill in `.env`:
 
 ```ini
-MONGODB_URI=mongodb+srv://...
-DATABASE_NAME=EchoBoardDB
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_KEY=<service-role-key>
 
-STORAGE_BACKEND=s3
-S3_ENDPOINT=<account-id>.r2.cloudflarestorage.com
-S3_ACCESS_KEY=<access-key-id>
-S3_SECRET_KEY=<secret-access-key>
-S3_BUCKET=echoboard-dataset
-S3_REGION=auto
-S3_SECURE=true
+STORAGE_BACKEND=supabase
+SUPABASE_BUCKET=echoboard-dataset
 ```
 
 Then start the two processes, in separate terminals:
@@ -115,56 +129,96 @@ time, independently.
 
 ### Verifying it works
 
-On startup the backend prints the active storage backend:
+On startup the backend prints both backends:
 
 ```
-  Storage: S3-compatible bucket 'echoboard-dataset' (https://<account-id>.r2.cloudflarestorage.com)
+  Database: Supabase — https://<project-ref>.supabase.co [OK] Connected
+  Storage: Supabase Storage bucket 'echoboard-dataset'
 ```
 
 Have one person upload a video, then have the other refresh their own
 dashboard. The keyframes should appear. If they do, the shared setup is
 correct.
 
+## The dataset and metadata
+
+Each image is one `dataset_images` row plus zero or more `annotations` rows.
+The API returns them in the original nested ECHD shape, so the stored
+metadata is exactly what a training pipeline needs:
+
+| Group | Fields | Why it matters for training |
+|---|---|---|
+| Identity | `image_id` (IMG0001), `image_name`, `image_path` | Joins a label to its image bytes |
+| Provenance | `sequence_id`, `subject`, `board_type`, `writer_id`, `video_id`, `frame_index`, `timestamp_ms`, `change_score` | Lets you split by lesson or writer so the same board does not appear in both train and test |
+| `image_metadata` | `width`, `height`, `format`, `size_kb` | Filter or bucket by resolution without reading every file |
+| `annotations[]` | `annotation_id`, `class`, `bbox`, `text`, `latex`, `confidence` | The labels themselves |
+| `quality_metadata` | `blur_score`, `lighting_score`, `duplicate`, `occluded`, `selected` | Exclude unusable samples |
+| `processing_status` | `ocr_completed`, `annotation_completed`, `reviewed` | Train only on human-verified labels |
+
+### Exporting for training
+
+`GET /api/download/dataset` (the dashboard's Download button) returns a ZIP
+containing the images in their bucket layout plus:
+
+- `metadata.json` — the complete ECHD record for every exported image
+- `annotations.csv` — a flat `image_path`-to-label table for data loaders
+
+Because `image_path` in both manifests matches the archive member paths, the
+export can be fed to a training script without touching Supabase.
+
+To query directly instead, the `writer_id` and `reviewed` columns are
+indexed, so a reviewed-only, writer-disjoint split is a plain SQL query in
+the Supabase SQL Editor.
+
 ## Migrating images you already have locally
 
-If you used the old local/MinIO storage, your images are in
-`dataset/echoboard-dataset/` and are not yet in the shared bucket. After
-configuring `.env` as above, upload them once:
+If you previously ran with local or MinIO storage, your images are in
+`dataset/echoboard-dataset/` and not yet in Supabase. After configuring
+`.env`, upload them once:
 
 ```bash
 python scripts/sync_local_to_bucket.py --dry-run   # preview
 python scripts/sync_local_to_bucket.py             # upload
 ```
 
-Objects already present in the bucket are skipped, so the script is safe to
-re-run.
+Objects already present are skipped, so the script is safe to re-run. Note
+this migrates image **bytes** only; metadata rows written to a previous
+MongoDB instance are not carried over.
 
 ## Working offline
 
 Set `STORAGE_BACKEND=local` to write images to `dataset/echoboard-dataset/`
 instead of the bucket. Images saved this way are **not** visible to
-collaborators until you run the sync script above. If you also want an
-isolated metadata store, point `DATABASE_NAME` at a different database name
-so you do not add rows the team can see but cannot read.
+collaborators until you run the sync script above. Metadata still goes to
+the shared Supabase project, so prefer this only for short offline sessions
+— or the rows you add will reference images only your machine holds.
 
 ## Troubleshooting
 
-**`Bucket 'echoboard-dataset' was not found`** — the bucket must be created
-in the provider console; EchoBoard does not create it, because API tokens
-are normally scoped to a single existing bucket. Check `S3_BUCKET` for
-typos.
+**`the ECHD schema is missing`** — step 2 has not been run against this
+project. Apply `supabase/schema.sql` in the SQL Editor.
 
-**`Could not reach the object store`** — verify `S3_ENDPOINT` has no
-`https://` prefix, that `S3_SECURE=true` for cloud providers, and that
-`S3_REGION=auto` when using R2.
+**`Could not find the function public.next_image_id`** or a missing table
+that you know exists — Supabase caches the API schema. Run
+`NOTIFY pgrst, 'reload schema';` in the SQL Editor, or toggle
+**Project Settings > API > Restart server**.
 
-**The backend refuses to start on a storage error.** This is deliberate.
-Metadata is shared, so silently writing images to one machine's disk would
-register rows that every collaborator can see but nobody else can read. Fix
-the configuration, or set `STORAGE_BACKEND=local` explicitly.
+**`Missing required Supabase settings`** — `.env` is absent or incomplete.
+Copy `.env.example` and fill both `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`.
 
-**MongoDB connection timeouts** — your current IP is probably not in the
-Atlas Network Access list. Home IP addresses change; re-add yours.
+**Row-level-security or permission errors on insert** — you are almost
+certainly using the `anon` key. Switch to `service_role`.
+
+**Bucket could not be created** — create `echoboard-dataset` manually under
+Storage, keep it private, and restart the backend.
+
+**The backend refuses to start on a database or storage error.** This is
+deliberate. Metadata is shared, so silently writing images to one machine's
+disk would register rows every collaborator can see but nobody else can
+read. Fix the configuration, or set `STORAGE_BACKEND=local` explicitly.
+
+**A project that went idle** — free projects pause after ~1 week of
+inactivity. Resume it from the Supabase dashboard.
 
 ## A note on security
 
@@ -172,5 +226,5 @@ The API has **no authentication**, and CORS is restricted to localhost
 origins by default. This is safe while each person runs the backend on their
 own machine. Do not expose port 8000 to the internet or widen
 `CORS_ORIGINS` without adding authentication first — every endpoint,
-including image deletion and full-dataset export, would otherwise be open
-to anyone with the URL.
+including image deletion and full-dataset export, would otherwise be open to
+anyone with the URL, and the backend holds a `service_role` key.

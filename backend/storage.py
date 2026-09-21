@@ -2,31 +2,36 @@
 storage.py
 EchoBoard Dataset Creation Module — Image Storage Layer
 
-Stores original keyframe images in an S3-compatible object store.
+Stores original keyframe images in Supabase Storage, in the same project
+that holds the dataset metadata (see backend/database.py). One Supabase
+account therefore provides both halves of the dataset, and no collaborator
+has to host or keep running an object-storage server.
 
 Two backends are supported, selected explicitly via STORAGE_BACKEND:
 
-  s3     Any S3-compatible object store — Cloudflare R2, Backblaze B2,
-         Amazon S3, or a self-hosted MinIO server. This is the shared
-         backend: every collaborator points at the same bucket, so images
-         uploaded by one person are immediately readable by everyone.
+  supabase  Supabase Storage bucket. This is the shared backend: every
+            collaborator points at the same project, so images uploaded by
+            one person are immediately readable by everyone.
 
-  local  Plain filesystem storage under dataset/echoboard-dataset/,
-         mirroring the bucket layout. Intended for solo development and
-         offline work only.
+  local     Plain filesystem storage under dataset/echoboard-dataset/,
+            mirroring the bucket layout. Solo development and offline work
+            only.
 
-There is deliberately NO automatic fallback from 's3' to 'local'. In a
-shared setup, metadata lives in a shared MongoDB while bytes live in the
-bucket; silently writing bytes to one machine's disk would register rows
-that every collaborator can see but nobody else can read. A misconfigured
-or unreachable bucket therefore raises instead of degrading quietly. This
-mirrors the no-fallback stance taken by database.py.
+There is deliberately NO automatic fallback from 'supabase' to 'local'.
+Metadata lives in the shared database while bytes live in the bucket;
+silently writing bytes to one machine's disk would register rows that every
+collaborator can see but nobody else can read. A misconfigured or
+unreachable bucket therefore raises instead of degrading quietly, matching
+the no-fallback stance in database.py.
+
+Object paths are <subject>/<sequence_id>/<filename> and are stored verbatim
+in dataset_images.image_path, so metadata and bytes stay addressable
+together for later model training.
 
 IMPORTANT: Images are stored as-is — NO compression, NO cropping,
 NO modification of any kind.
 """
 
-import io
 import os
 from dotenv import load_dotenv
 
@@ -35,105 +40,47 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 # ---------------------------------------------------------------------------
 # Configuration — loaded from .env (see .env.example)
 # ---------------------------------------------------------------------------
-# "s3" (shared object store) or "local" (filesystem, solo development).
-STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "s3").strip().lower()
+# "supabase" (shared bucket) or "local" (filesystem, solo development).
+STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "supabase").strip().lower()
 
-# Host[:port] of the S3-compatible endpoint, WITHOUT a scheme.
-#   Cloudflare R2   <account-id>.r2.cloudflarestorage.com
-#   Backblaze B2    s3.<region>.backblazeb2.com
-#   Amazon S3       s3.<region>.amazonaws.com
-#   Local MinIO     localhost:9000
-S3_ENDPOINT = os.environ.get("S3_ENDPOINT", "").strip()
-S3_ACCESS_KEY = os.environ.get("S3_ACCESS_KEY", "")
-S3_SECRET_KEY = os.environ.get("S3_SECRET_KEY", "")
-S3_SECURE = os.environ.get("S3_SECURE", "true").strip().lower() == "true"
-S3_BUCKET = os.environ.get("S3_BUCKET", "echoboard-dataset").strip()
-
-# Cloudflare R2 requires the literal region "auto". Most other providers
-# accept their own region name; MinIO ignores it entirely.
-S3_REGION = os.environ.get("S3_REGION", "auto").strip() or None
+# Storage reuses the same project credentials as the metadata layer.
+SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "echoboard-dataset").strip()
 
 # Local filesystem directory (mirrors the bucket structure).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_DATASET_DIR = os.path.join(os.path.dirname(BASE_DIR), "dataset", "echoboard-dataset")
 
-_VALID_BACKENDS = ("s3", "local")
+_VALID_BACKENDS = ("supabase", "local")
 
-# True once init_storage() has verified the configured backend.
-USE_S3 = False
-_s3_client = None
+# True once init_storage() has verified the Supabase bucket.
+USE_SUPABASE = False
 
 
 class StorageConfigError(RuntimeError):
     """Raised when the storage backend is misconfigured or unreachable."""
 
 
-def _get_s3_client():
-    """Return the S3-compatible client, creating it on first call."""
-    global _s3_client
-    if _s3_client is not None:
-        return _s3_client
+def _bucket():
+    """Return the Supabase Storage bucket proxy for this project."""
+    import database as db
 
     try:
-        from minio import Minio
-        import urllib3
-    except ImportError as exc:  # pragma: no cover - dependency guard
-        raise StorageConfigError(
-            "The 'minio' package is required for the s3 storage backend. "
-            "Install dependencies with: pip install -r requirements.txt"
-        ) from exc
-
-    missing = [
-        name
-        for name, value in (
-            ("S3_ENDPOINT", S3_ENDPOINT),
-            ("S3_ACCESS_KEY", S3_ACCESS_KEY),
-            ("S3_SECRET_KEY", S3_SECRET_KEY),
-        )
-        if not value
-    ]
-    if missing:
-        raise StorageConfigError(
-            "Missing required storage settings: "
-            + ", ".join(missing)
-            + ". Copy .env.example to .env and fill in your bucket credentials, "
-            "or set STORAGE_BACKEND=local to work offline."
-        )
-
-    if "://" in S3_ENDPOINT:
-        raise StorageConfigError(
-            f"S3_ENDPOINT must not include a scheme (got '{S3_ENDPOINT}'). "
-            "Use the bare host, e.g. <account-id>.r2.cloudflarestorage.com, "
-            "and control TLS with S3_SECURE."
-        )
-
-    # Bound the connect timeout so misconfiguration surfaces as a fast, clear
-    # error rather than a long hang at startup.
-    http_client = urllib3.PoolManager(
-        timeout=urllib3.Timeout(connect=5.0, read=60.0),
-        retries=urllib3.Retry(total=2, backoff_factor=0.2),
-    )
-
-    _s3_client = Minio(
-        S3_ENDPOINT,
-        access_key=S3_ACCESS_KEY,
-        secret_key=S3_SECRET_KEY,
-        secure=S3_SECURE,
-        region=S3_REGION,
-        http_client=http_client,
-    )
-    return _s3_client
+        client = db.get_client()
+    except db.DatabaseConfigError as exc:
+        # Storage and metadata share SUPABASE_URL / SUPABASE_SERVICE_KEY.
+        raise StorageConfigError(str(exc)) from exc
+    return client.storage.from_(SUPABASE_BUCKET)
 
 
 def init_storage():
     """
     Initialize and verify the configured storage backend.
 
-    Raises StorageConfigError if STORAGE_BACKEND=s3 and the bucket cannot be
-    reached, so the API refuses to start rather than writing images to a
-    location other collaborators cannot read.
+    Raises StorageConfigError if STORAGE_BACKEND=supabase and the bucket
+    cannot be reached, so the API refuses to start rather than writing
+    images somewhere collaborators cannot read.
     """
-    global USE_S3
+    global USE_SUPABASE
 
     if STORAGE_BACKEND not in _VALID_BACKENDS:
         raise StorageConfigError(
@@ -141,34 +88,49 @@ def init_storage():
         )
 
     if STORAGE_BACKEND == "local":
-        USE_S3 = False
+        USE_SUPABASE = False
         os.makedirs(LOCAL_DATASET_DIR, exist_ok=True)
         print(f"  Storage: local filesystem ({LOCAL_DATASET_DIR})")
         print("  NOTE: images are NOT shared with collaborators in this mode.")
         return
 
-    client = _get_s3_client()
+    import database as db
+
     try:
-        bucket_found = client.bucket_exists(S3_BUCKET)
+        client = db.get_client()
+    except db.DatabaseConfigError as exc:
+        raise StorageConfigError(str(exc)) from exc
+
+    try:
+        buckets = client.storage.list_buckets()
     except Exception as exc:
         raise StorageConfigError(
-            f"Could not reach the object store at '{S3_ENDPOINT}': {exc}\n"
-            "  Check S3_ENDPOINT, S3_REGION, S3_SECURE and your access keys "
-            "in .env (see docs/SHARED_SETUP.md)."
+            f"Could not reach Supabase Storage: {exc}\n"
+            "  Check SUPABASE_URL and SUPABASE_SERVICE_KEY in .env "
+            "(see docs/SHARED_SETUP.md)."
         ) from exc
 
-    if not bucket_found:
-        raise StorageConfigError(
-            f"Bucket '{S3_BUCKET}' was not found at '{S3_ENDPOINT}'.\n"
-            "  Create it once in your provider's console, then set S3_BUCKET "
-            "in .env (see docs/SHARED_SETUP.md). Buckets are not created "
-            "automatically, because API tokens are normally scoped to a "
-            "single existing bucket."
-        )
+    names = {getattr(b, "name", None) or (b.get("name") if isinstance(b, dict) else None)
+             for b in (buckets or [])}
 
-    USE_S3 = True
-    scheme = "https" if S3_SECURE else "http"
-    print(f"  Storage: S3-compatible bucket '{S3_BUCKET}' ({scheme}://{S3_ENDPOINT})")
+    if SUPABASE_BUCKET not in names:
+        # The service_role key may create buckets; try once so first-time
+        # setup does not require a manual step, and report clearly if the
+        # key is not permitted to.
+        try:
+            client.storage.create_bucket(SUPABASE_BUCKET, options={"public": False})
+            print(f"  Created private Supabase Storage bucket '{SUPABASE_BUCKET}'.")
+        except Exception as exc:
+            raise StorageConfigError(
+                f"Supabase Storage bucket '{SUPABASE_BUCKET}' does not exist and "
+                f"could not be created automatically: {exc}\n"
+                "  Create it once in Supabase Dashboard > Storage > New bucket "
+                "(keep it private), then set SUPABASE_BUCKET in .env "
+                "(see docs/SHARED_SETUP.md)."
+            ) from exc
+
+    USE_SUPABASE = True
+    print(f"  Storage: Supabase Storage bucket '{SUPABASE_BUCKET}'")
 
 
 def _local_path(object_path: str) -> str:
@@ -189,21 +151,33 @@ def store_image(image_bytes: bytes, subject: str, sequence_id: str,
 
     Path structure: <subject>/<sequence_id>/<filename> within the bucket.
 
-    Returns the object path (relative to the bucket root).
+    Returns the object path, which is recorded in dataset_images.image_path.
 
     IMPORTANT: The image is stored AS-IS — no compression, no cropping,
     no modification of any kind.
     """
-    object_path = f"{subject}/{sequence_id}/{filename}"
+    parts = [p for p in (subject, sequence_id, filename) if p]
+    return store_object("/".join(parts), image_bytes)
 
-    if USE_S3:
-        client = _get_s3_client()
-        client.put_object(
-            S3_BUCKET,
+
+def store_object(object_path: str, image_bytes: bytes) -> str:
+    """
+    Store bytes at an exact object path, returning that path.
+
+    store_image() builds the conventional <subject>/<sequence_id>/<filename>
+    path and delegates here. Use this directly when a path already exists,
+    for example when migrating local files that are already laid out.
+    """
+    if USE_SUPABASE:
+        # upsert allows re-processing a sequence without a duplicate-object
+        # error, matching the previous object-store behaviour.
+        _bucket().upload(
             object_path,
-            io.BytesIO(image_bytes),
-            length=len(image_bytes),
-            content_type=_content_type(filename),
+            image_bytes,
+            file_options={
+                "content-type": _content_type(object_path),
+                "upsert": "true",
+            },
         )
         return object_path
 
@@ -222,19 +196,18 @@ def get_image(object_path: str) -> bytes:
     alternative image extensions are tried, which tolerates historical
     .jpeg/.png mismatches between stored metadata and stored bytes.
     """
-    if USE_S3:
-        client = _get_s3_client()
+    if not object_path:
+        return b""
+
+    if USE_SUPABASE:
+        bucket = _bucket()
         for candidate in _extension_candidates(object_path):
-            response = None
             try:
-                response = client.get_object(S3_BUCKET, candidate)
-                return response.read()
+                data = bucket.download(candidate)
+                if data:
+                    return data
             except Exception:
                 continue
-            finally:
-                if response is not None:
-                    response.close()
-                    response.release_conn()
         return b""
 
     for candidate in _extension_candidates(object_path):
@@ -257,9 +230,11 @@ def _extension_candidates(object_path: str) -> list:
 
 def delete_image(object_path: str):
     """Delete an image from storage. Missing objects are ignored."""
-    if USE_S3:
-        client = _get_s3_client()
-        client.remove_object(S3_BUCKET, object_path)
+    if not object_path:
+        return
+
+    if USE_SUPABASE:
+        _bucket().remove([object_path])
         return
 
     local_path = _local_path(object_path)
@@ -275,14 +250,8 @@ def list_images(subject: str = None, sequence_id: str = None) -> list:
         if sequence_id:
             prefix = f"{subject}/{sequence_id}/"
 
-    if USE_S3:
-        client = _get_s3_client()
-        objects = client.list_objects(S3_BUCKET, prefix=prefix, recursive=True)
-        return [
-            obj.object_name
-            for obj in objects
-            if obj.object_name.lower().endswith((".jpg", ".jpeg", ".png"))
-        ]
+    if USE_SUPABASE:
+        return _list_supabase(prefix.rstrip("/"))
 
     results = []
     search_dir = _local_path(prefix) if prefix else LOCAL_DATASET_DIR
@@ -293,4 +262,34 @@ def list_images(subject: str = None, sequence_id: str = None) -> list:
                     full = os.path.join(root, name)
                     rel = os.path.relpath(full, LOCAL_DATASET_DIR).replace(os.sep, "/")
                     results.append(rel)
+    return results
+
+
+def _list_supabase(prefix: str, _depth: int = 0) -> list:
+    """
+    Recursively list image objects under a prefix.
+
+    Supabase Storage lists one folder level at a time, so directories are
+    walked explicitly. Entries without an id are folders.
+    """
+    if _depth > 8:  # Guard against unexpectedly deep nesting.
+        return []
+
+    try:
+        entries = _bucket().list(prefix) or []
+    except Exception:
+        return []
+
+    results = []
+    for entry in entries:
+        name = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
+        if not name:
+            continue
+        child = f"{prefix}/{name}" if prefix else name
+
+        is_folder = (entry.get("id") is None) if isinstance(entry, dict) else False
+        if is_folder:
+            results.extend(_list_supabase(child, _depth + 1))
+        elif name.lower().endswith((".jpg", ".jpeg", ".png")):
+            results.append(child)
     return results

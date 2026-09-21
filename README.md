@@ -27,15 +27,15 @@ and are not implemented here.
         ▼
   backend/api.py                 FastAPI (uvicorn, port 8000)
         ├── video_processor.py   OpenCV keyframe detection, yt-dlp ingest
-        ├── storage.py           S3-compatible object storage (images)
-        └── database.py          MongoDB Atlas (ECHD metadata)
+        ├── storage.py           Supabase Storage (image files)
+        └── database.py          Supabase Postgres (ECHD metadata)
 ```
 
-State lives entirely in two managed cloud services — MongoDB Atlas for
-metadata and an S3-compatible bucket for image bytes. The backend itself is
+State lives entirely in one managed **Supabase** project: PostgreSQL for
+metadata and Supabase Storage for the image bytes. The backend itself is
 stateless, so **every collaborator runs their own local copy against the
-same shared data.** No one has to host a server or keep a terminal open for
-anyone else. See **[docs/SHARED_SETUP.md](docs/SHARED_SETUP.md)**.
+same shared project.** No one has to host a server or keep a terminal open
+for anyone else. See **[docs/SHARED_SETUP.md](docs/SHARED_SETUP.md)**.
 
 ---
 
@@ -75,26 +75,65 @@ Raise `motion_threshold` for shaky handheld footage; lower
 |---|---|
 | 1–3 | Video ingest (file upload or URL via yt-dlp) and keyframe extraction |
 | 4 | Direct upload of individual board images |
-| 5 | Original images stored byte-for-byte in object storage — no compression or cropping |
-| 6 | Metadata registered in MongoDB under the ECHD schema |
+| 5 | Original images stored byte-for-byte in Supabase Storage — no compression or cropping |
+| 6 | Metadata registered in Supabase Postgres under the ECHD schema |
 | 7 | Annotation queue, including OCR-assisted auto-annotation and human verification |
-| 9–12 | Dataset versioning and ZIP export |
+| 9–12 | Dataset versioning, and ZIP export bundling images with `metadata.json` + `annotations.csv` |
+
+---
+
+## Dataset metadata
+
+Every image is one `dataset_images` row plus its `annotations` rows, and the
+API returns them in the nested ECHD shape:
+
+```json
+{
+  "image_id": "IMG0001",
+  "image_path": "physics/physics_lec1/frame0001.jpg",
+  "sequence_id": "physics_lec1", "subject": "Physics",
+  "board_type": "Blackboard",    "writer_id": "teacher_a",
+  "video_id": "…", "frame_index": 120, "timestamp_ms": 4800,
+  "change_score": 0.42, "dataset_version": "ECHD_v1",
+  "image_metadata":    { "width": 1920, "height": 1080, "format": "jpg", "size_kb": 143 },
+  "annotations":       [ { "annotation_id": "ANN0001", "class": "Equation",
+                           "bbox": [], "text": "F = ma", "latex": "",
+                           "confidence": 1.0 } ],
+  "quality_metadata":  { "blur_score": 0.0, "lighting_score": 0, "duplicate": false,
+                         "occluded": false, "selected": true },
+  "processing_status": { "ocr_completed": true, "annotation_completed": true,
+                         "reviewed": true }
+}
+```
+
+The provenance fields exist so a training split can be made without leakage:
+`writer_id` and `sequence_id` let you hold out entire writers or lessons
+rather than splitting frames of the same board across train and test, and
+`processing_status.reviewed` restricts training to human-verified labels.
+
+See [docs/SHARED_SETUP.md](docs/SHARED_SETUP.md#the-dataset-and-metadata)
+for the field-by-field rationale and the export format.
 
 ---
 
 ## Setup
 
 For the shared two-person configuration, follow
-**[docs/SHARED_SETUP.md](docs/SHARED_SETUP.md)** — it covers the Atlas
-cluster, the storage bucket, and credential sharing. The short version:
+**[docs/SHARED_SETUP.md](docs/SHARED_SETUP.md)** — it covers creating the
+Supabase project, applying the schema, and sharing credentials. The short
+version:
 
 ```bash
 python -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env              # fill in MongoDB + bucket credentials
+cp .env.example .env              # fill in your Supabase URL + service_role key
 ```
+
+Apply the database schema once per Supabase project: paste
+[`supabase/schema.sql`](supabase/schema.sql) into the Supabase SQL Editor
+and run it.
 
 Run the backend and the dashboard in separate terminals:
 
@@ -113,9 +152,10 @@ All backend settings are read from `.env`; see
 
 | Variable | Purpose |
 |---|---|
-| `MONGODB_URI`, `DATABASE_NAME` | Metadata store |
-| `STORAGE_BACKEND` | `s3` for shared work, `local` for offline development |
-| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_REGION`, `S3_SECURE` | Object storage |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_SERVICE_KEY` | `service_role` key — server-side only, never commit |
+| `STORAGE_BACKEND` | `supabase` for shared work, `local` for offline development |
+| `SUPABASE_BUCKET` | Storage bucket name (default `echoboard-dataset`) |
 | `CORS_ORIGINS` | Allowed dashboard origins (defaults to localhost) |
 
 Frontend settings live in [`dashboard/.env.example`](dashboard/.env.example);
@@ -141,7 +181,7 @@ running. Principal endpoints:
 | `GET` | `/api/dataset/images` | Browse dataset images |
 | `POST` | `/api/dataset/images/{id}/ocr` | OCR-assisted auto-annotation |
 | `PUT` | `/api/dataset/images/{id}/annotation` | Save a verified annotation |
-| `GET` | `/api/download/dataset` | Export the full dataset as a ZIP |
+| `GET` | `/api/download/dataset` | Export images + `metadata.json` + `annotations.csv` as a ZIP |
 
 ---
 
@@ -151,8 +191,10 @@ running. Principal endpoints:
 backend/
   api.py               FastAPI application and all REST endpoints
   video_processor.py   Keyframe detection engine
-  storage.py           Object storage layer (S3-compatible or local)
-  database.py          MongoDB Atlas layer, ECHD schema
+  storage.py           Supabase Storage layer (or local, for offline work)
+  database.py          Supabase Postgres layer, ECHD schema
+supabase/
+  schema.sql           Database schema — apply once in the SQL Editor
 dashboard/
   src/components/      Upload panel, dataset explorer, annotation UI
   src/api.js           Typed API client for the backend
@@ -170,10 +212,14 @@ docs/
 
 The API has **no authentication**, and CORS is limited to localhost origins
 by default. Both are appropriate while each collaborator runs the backend
-on their own machine, which is the supported deployment model. Do not
-expose port 8000 publicly or widen `CORS_ORIGINS` without adding
-authentication: every endpoint — including image deletion and full-dataset
-export — would otherwise be reachable by anyone with the URL.
+on their own machine, which is the supported deployment model.
+
+The backend holds the Supabase `service_role` key, which bypasses Row Level
+Security. Keep it in `.env` (gitignored), never in the dashboard bundle, and
+never in a commit. Do not expose port 8000 publicly or widen
+`CORS_ORIGINS` without adding authentication: every endpoint — including
+image deletion and full-dataset export — would otherwise be reachable by
+anyone with the URL.
 
 ---
 
