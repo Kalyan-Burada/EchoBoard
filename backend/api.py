@@ -5,8 +5,8 @@ EchoBoard Dataset Creation Module — FastAPI REST API
 Provides REST endpoints for the React dashboard to:
   - Upload videos and extract intelligent keyframes (Stages 1-3)
   - Upload individual board images directly (Stage 4)
-  - Store original images in MinIO / local storage (Stage 5)
-  - Register dataset metadata in MongoDB / SQLite (Stage 6)
+  - Store original images in Supabase Storage (Stage 5)
+  - Register dataset metadata in Supabase (Stage 6)
   - Manage the annotation queue (Stage 7)
   - Export dataset versions (Stages 9-12)
 
@@ -17,7 +17,9 @@ IMPORTANT: This module does NOT perform OCR, handwriting recognition,
 YOLO, MobileNet, or Bi-LSTM inference. Those belong to later phases.
 """
 
+import csv
 import io
+import json
 import os
 import sys
 import shutil
@@ -30,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime, timezone
 
 # Add parent directory to path so we can import backend modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,15 +41,51 @@ import database as db
 import storage
 from video_processor import process_video
 
+
+def _image_dimensions(image_bytes: bytes):
+    """
+    Return (width, height, size_kb) for encoded image bytes.
+
+    Recorded on every dataset image so downstream training can filter or
+    resize by resolution without re-reading the stored objects.
+    """
+    size_kb = max(1, len(image_bytes) // 1024) if image_bytes else 0
+    try:
+        import cv2
+        import numpy as np
+
+        decoded = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if decoded is not None:
+            height, width = decoded.shape[:2]
+            return width, height, size_kb
+    except Exception:
+        pass
+    return 0, 0, size_kb
+
 app = FastAPI(
     title="EchoBoard Dataset Creation API",
     description="REST API for the EchoBoard Classroom Handwriting Dataset (ECHD) creation module.",
     version="2.0.0",
 )
 
+# Allowed dashboard origins. The default covers the Vite dev server and a
+# local production preview. Override with a comma-separated CORS_ORIGINS if
+# you serve the dashboard from somewhere else.
+#
+# A wildcard origin is deliberately not used: it is invalid in combination
+# with credentialed requests, and this API has no authentication, so it
+# should never be openly reachable.
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,9 +96,20 @@ app.add_middleware(
 def startup():
     print("\n=== EchoBoard Dataset Creation Module ===")
     print("  Initializing database...")
-    db.init_db()
+    try:
+        db.init_db()
+    except db.DatabaseConfigError as exc:
+        # Refuse to start rather than accept uploads we cannot register.
+        print(f"\n  DATABASE ERROR: {exc}\n")
+        raise
     print("  Initializing storage...")
-    storage.init_storage()
+    try:
+        storage.init_storage()
+    except storage.StorageConfigError as exc:
+        # Refuse to start rather than accept uploads we cannot store where
+        # collaborators can read them. See backend/storage.py for rationale.
+        print(f"\n  STORAGE ERROR: {exc}\n")
+        raise
     print("  Ready!\n")
 
 
@@ -127,7 +177,9 @@ def delete_video_endpoint(video_id: str):
     if not v:
         raise HTTPException(404, "Video not found")
 
-    # Also delete associated images from storage
+    # Delete the stored bytes, then the metadata rows, then the video.
+    # Removing only the bytes would leave dataset rows pointing at objects
+    # that no longer exist.
     images = db.get_images_for_video(video_id)
     for img in images:
         try:
@@ -135,6 +187,7 @@ def delete_video_endpoint(video_id: str):
         except Exception:
             pass
 
+    db.delete_images_for_video(video_id)
     db.delete_video(video_id)
     return {"message": f"Deleted '{v['filename']}' and its dataset images"}
 
@@ -164,14 +217,14 @@ def get_image_raw(image_id: str):
 def get_keyframe_image(image_id: str):
     """
     Serve an image by its internal DB id or ECHD image_id.
-    Uses efficient MongoDB _id lookup — no full table scan.
+    Uses an indexed primary-key lookup — no full table scan.
     """
     def _detect_media_type(path: str) -> str:
         if path.lower().endswith(".png"):
             return "image/png"
         return "image/jpeg"
 
-    # Try by internal MongoDB _id first (this is what the frontend sends)
+    # Try by internal UUID first (this is what the frontend sends)
     record = db.get_dataset_image_by_internal_id(image_id)
     if record:
         data = storage.get_image(record["image_path"])
@@ -202,8 +255,8 @@ async def dataset_upload(
     """
     Upload a single board image directly into the ECHD dataset.
 
-    This is the Stage 4 endpoint. The image is stored unmodified in MinIO/local
-    storage and metadata is registered in MongoDB/SQLite.
+    This is the Stage 4 endpoint. The image is stored unmodified in Supabase Storage
+    and metadata is registered in Supabase Postgres.
     """
     image_bytes = await image.read()
     if not image_bytes:
@@ -213,14 +266,19 @@ async def dataset_upload(
     ext = os.path.splitext(image.filename or ".jpg")[1] or ".jpg"
     version = db.get_current_version()
 
-    # Store original image in MinIO/local (Stage 5)
+    # Store original image in Supabase Storage (Stage 5)
     # Path: echoboard-dataset/<subject>/<sequence_id>/<filename>
     safe_subject = "".join(c if c.isalnum() or c in " _-" else "_" for c in subject).strip().lower().replace(" ", "_")
     fname = f"frame_{len(db.get_dataset_images(sequence_id=sequence_id)) + 1:04d}{ext}"
     image_path = storage.store_image(image_bytes, safe_subject, sequence_id, fname)
+    width, height, size_kb = _image_dimensions(image_bytes)
 
-    # Register in MongoDB/SQLite (Stage 6)
+    # Register in Supabase (Stage 6)
     record = db.insert_dataset_image(
+        image_name=fname,
+        width=width,
+        height=height,
+        size_kb=size_kb,
         sequence_id=sequence_id,
         subject=subject,
         board_type=board_type,
@@ -276,12 +334,17 @@ async def upload_video(
         with open(kf["image_path"], "rb") as f:
             image_bytes = f.read()
 
-        # Store original image in MinIO/local (Stage 5)
+        # Store original image in Supabase Storage (Stage 5)
         fname = f"frame{kf_counter[0]:04d}.jpg"
         stored_path = storage.store_image(image_bytes, safe_subject, sequence_id, fname)
+        width, height, size_kb = _image_dimensions(image_bytes)
 
-        # Register in MongoDB/SQLite (Stage 6) — annotation_status = "Pending" (Stage 7)
+        # Register in Supabase (Stage 6) — annotation_status = "Pending" (Stage 7)
         db.insert_dataset_image(
+            image_name=fname,
+            width=width,
+            height=height,
+            size_kb=size_kb,
             sequence_id=sequence_id,
             subject=subject,
             board_type=board_type,
@@ -339,7 +402,7 @@ async def upload_images(
     Upload a folder of images into the ECHD dataset.
 
     - files: the image files from webkitdirectory
-    - folder_name: name for organizing in MinIO
+    - folder_name: name for organizing in the storage bucket
     - annotations_json: JSON string mapping filename -> {text, class}
     """
     import json
@@ -377,7 +440,7 @@ async def upload_images(
         if img_cv is not None:
             height, width = img_cv.shape[:2]
 
-        # Store binary in MinIO
+        # Store binary in Supabase Storage
         stored_path = storage.store_image(image_bytes, safe_folder, "frames", fname)
 
         # Get annotation for this file (by original filename)
@@ -385,7 +448,7 @@ async def upload_images(
         ann_text = ann.get("text", "")
         ann_class = ann.get("class", "Text")
 
-        # Insert metadata into MongoDB
+        # Insert metadata into Supabase
         db.insert_dataset_image(
             image_name=fname,
             image_path=stored_path,
@@ -443,8 +506,13 @@ def background_process_url(
 
             fname = f"frame{kf_counter[0]:04d}.jpg"
             stored_path = storage.store_image(image_bytes, safe_subject, sequence_id, fname)
+            width, height, size_kb = _image_dimensions(image_bytes)
 
             db.insert_dataset_image(
+                image_name=fname,
+                width=width,
+                height=height,
+                size_kb=size_kb,
                 sequence_id=sequence_id,
                 subject=subject,
                 board_type=board_type,
@@ -496,7 +564,7 @@ def background_process_url(
         )
     except Exception as e:
         print(f"Error in background_process_url: {e}", flush=True)
-        db.update_video(video_id, 0, 0, 0, processing=False)
+        db.set_video_processing(video_id, False)
     finally:
         running_tasks.pop(video_id, None)
         if dl_thread and dl_thread.is_alive():
@@ -558,10 +626,10 @@ def stop_video_processing(video_id: str):
     """Send a stop signal to a currently processing video."""
     if video_id in running_tasks:
         running_tasks[video_id].set()
-        db.update_video(video_id, 0, 0, 0, processing=False)
+        db.set_video_processing(video_id, False)
         return {"message": "Stop signal sent successfully."}
     else:
-        db.update_video(video_id, 0, 0, 0, processing=False)
+        db.set_video_processing(video_id, False)
         raise HTTPException(404, "Video is not currently processing.")
 
 
@@ -781,21 +849,83 @@ def download_video_zip(video_id: str):
     )
 
 
+def _write_manifests(zf, images):
+    """
+    Add metadata.json and annotations.csv to a dataset export.
+
+    An export of images alone is not trainable: the labels and the
+    provenance needed to split or filter the data live in the metadata.
+    metadata.json carries the complete ECHD record for every included
+    image; annotations.csv is a flat image-to-label index for loaders that
+    prefer a table.
+    """
+    zf.writestr(
+        "metadata.json",
+        json.dumps(
+            {
+                "dataset": "EchoBoard Classroom Handwriting Dataset (ECHD)",
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "image_count": len(images),
+                "images": images,
+            },
+            indent=2,
+            default=str,
+        ),
+    )
+
+    rows = io.StringIO()
+    writer = csv.writer(rows)
+    writer.writerow([
+        "image_id", "image_path", "subject", "board_type", "writer_id",
+        "sequence_id", "video_id", "frame_index", "timestamp_ms",
+        "width", "height", "annotation_class", "annotation_text",
+        "reviewed", "dataset_version",
+    ])
+    for img in images:
+        annotation = (img.get("annotations") or [{}])[0]
+        writer.writerow([
+            img.get("image_id", ""),
+            img.get("image_path", ""),
+            img.get("subject", ""),
+            img.get("board_type", ""),
+            img.get("writer_id", ""),
+            img.get("sequence_id", ""),
+            img.get("video_id", "") or "",
+            img.get("frame_index", 0),
+            img.get("timestamp_ms", 0),
+            (img.get("image_metadata") or {}).get("width", 0),
+            (img.get("image_metadata") or {}).get("height", 0),
+            annotation.get("class", ""),
+            annotation.get("text", ""),
+            (img.get("processing_status") or {}).get("reviewed", False),
+            img.get("dataset_version", ""),
+        ])
+    zf.writestr("annotations.csv", rows.getvalue())
+
+
 @app.get("/api/download/dataset")
 def download_full_dataset():
-    """Download the entire ECHD dataset as a ZIP (Stage 12 output)."""
+    """
+    Download the entire ECHD dataset as a ZIP (Stage 12 output).
+
+    The archive mirrors the storage bucket layout and includes
+    metadata.json and annotations.csv so it can be consumed directly by a
+    training pipeline.
+    """
     images = db.get_dataset_images(limit=100000)
     if not images:
         raise HTTPException(404, "No images in dataset")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        included = []
         for img in images:
             data = storage.get_image(img["image_path"])
             if data:
-                # Mirror MinIO bucket structure
-                fname = img["image_path"]
-                zf.writestr(fname, data)
+                # Mirror the storage bucket structure
+                zf.writestr(img["image_path"], data)
+                included.append(img)
+        _write_manifests(zf, included)
     buf.seek(0)
     return StreamingResponse(
         buf,

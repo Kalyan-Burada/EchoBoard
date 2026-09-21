@@ -24,7 +24,7 @@ import cv2
 import os
 import time
 
-# Temporary frame output directory (frames are moved to MinIO/local storage after)
+# Temporary frame output directory (frames are moved to the storage bucket after)
 FRAMES_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frames")
 os.makedirs(FRAMES_DIR, exist_ok=True)
 
