@@ -155,6 +155,53 @@ metadata is exactly what a training pipeline needs:
 | `quality_metadata` | `blur_score`, `lighting_score`, `duplicate`, `occluded`, `selected` | Exclude unusable samples |
 | `processing_status` | `ocr_completed`, `annotation_completed`, `reviewed` | Train only on human-verified labels |
 
+### Bulk-ingesting a folder of images
+
+The dashboard upload suits a handful of files. For a whole folder, use the
+script: it records the provenance the browser upload leaves empty, measures
+image sharpness (variance of the Laplacian) into `blur_score`, skips images
+already ingested so it can be re-run, and can attach transcriptions from a
+labels file.
+
+```bash
+# Preview without writing anything
+python scripts/ingest_folder.py ./boards \
+    --subject Physics --writer-id teacher_a \
+    --sequence-id physics_lec1 --dry-run
+
+# Ingest, attaching labels
+python scripts/ingest_folder.py ./boards \
+    --subject Physics --writer-id teacher_a \
+    --sequence-id physics_lec1 --labels labels.json
+```
+
+`--labels` takes a JSON object keyed by image filename:
+
+```json
+{
+  "board_001.jpg": {
+    "lines": ["Newton's Laws", "F = ma"],
+    "regions": [
+      {"class": "Header",   "text": "Newton's Laws", "confidence": 0.9},
+      {"class": "Equation", "text": "F = ma", "latex": "F = ma"}
+    ],
+    "lighting_score": 70,
+    "occluded": false,
+    "duplicate": false
+  }
+}
+```
+
+Use `lines` for a plain line-by-line transcription, `regions` for control
+over class, bbox and LaTeX. Both may be given; a combined `FullBoard`
+annotation is added automatically when there are several lines.
+
+Labels loaded this way are always written with `reviewed=false`. Machine
+transcriptions — whether from the OCR endpoint or a vision model — are a
+first pass to speed up human labelling, not ground truth. Verify them in
+the Dataset Explorer, which sets `reviewed=true`, and train on verified
+rows so your accuracy figures mean what they claim.
+
 ### Exporting for training
 
 `GET /api/download/dataset` (the dashboard's Download button) returns a ZIP
