@@ -10,3 +10,5 @@ dashboard/dist/
 
 dataset/
 minio-server/
+dashboard/.env.local
+dashboard/.env

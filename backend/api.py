@@ -44,9 +44,24 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# Allowed dashboard origins. The default covers the Vite dev server and a
+# local production preview. Override with a comma-separated CORS_ORIGINS if
+# you serve the dashboard from somewhere else.
+#
+# A wildcard origin is deliberately not used: it is invalid in combination
+# with credentialed requests, and this API has no authentication, so it
+# should never be openly reachable.
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,7 +74,13 @@ def startup():
     print("  Initializing database...")
     db.init_db()
     print("  Initializing storage...")
-    storage.init_storage()
+    try:
+        storage.init_storage()
+    except storage.StorageConfigError as exc:
+        # Refuse to start rather than accept uploads we cannot store where
+        # collaborators can read them. See backend/storage.py for rationale.
+        print(f"\n  STORAGE ERROR: {exc}\n")
+        raise
     print("  Ready!\n")
 
 
