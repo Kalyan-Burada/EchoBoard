@@ -31,6 +31,10 @@ full control over class/bbox/latex/confidence. Both may be given. Every
 annotation is written with reviewed=false: machine-produced labels are a
 first pass for a human to verify in the dashboard, never ground truth.
 
+An entry may also override the run-wide provenance for that one image with
+"subject", "board_type" or "writer_id" — useful when a folder mixes
+blackboard photos with whiteboard video frames, or several writers.
+
 Usage:
     python scripts/ingest_folder.py ./boards \
         --subject Physics --writer-id teacher_a \
@@ -196,6 +200,9 @@ def main():
             width, height, blur = measure(path)
             object_path = storage.store_image(data, safe_subject, sequence_id, fname)
 
+            label = labels.get(basename, {})
+            # A folder can mix media: per-image overrides keep a whiteboard
+            # video frame from being recorded as a blackboard photo.
             record = db.insert_dataset_image(
                 image_name=fname,
                 image_path=object_path,
@@ -204,15 +211,14 @@ def main():
                 format_type=os.path.splitext(fname)[1].lstrip(".").lower(),
                 size_kb=max(1, len(data) // 1024),
                 sequence_id=sequence_id,
-                subject=args.subject,
-                board_type=args.board_type,
-                writer_id=args.writer_id,
+                subject=label.get("subject", args.subject),
+                board_type=label.get("board_type", args.board_type),
+                writer_id=label.get("writer_id", args.writer_id),
                 uploaded_by=args.writer_id,
                 frame_index=index,
             )
             image_id = record["image_id"]
 
-            label = labels.get(basename, {})
             annotations = build_annotations(label)
             if annotations:
                 # reviewed=False: these are machine labels awaiting a human.
