@@ -432,6 +432,73 @@ def update_dataset_image_annotation(image_id: str, annotation_text: str,
     return True
 
 
+def insert_annotations(image_id: str, annotations: list, mark_reviewed: bool = False):
+    """
+    Attach several annotations to one image, replacing any existing ones.
+
+    update_dataset_image_annotation() stores exactly one annotation, which
+    suits a single OCR pass. A board usually holds several distinct regions
+    (a header, body lines, an equation), and each needs its own label with
+    its own class and bbox, so this takes a list.
+
+    Each entry may set: class, text, bbox, latex, confidence.
+    Returns the number of annotation rows written.
+    """
+    client = get_client()
+
+    record = get_dataset_image_by_id(image_id) or get_dataset_image_by_internal_id(image_id)
+    if not record:
+        return 0
+    echd_id = record["image_id"]
+
+    client.table(TABLE_ANNOTATIONS).delete().eq("image_id", echd_id).execute()
+
+    rows = []
+    for entry in annotations:
+        text = (entry.get("text") or "").strip()
+        rows.append({
+            "annotation_id": _next_annotation_id(),
+            "image_id": echd_id,
+            "class": entry.get("class") or "Text",
+            "bbox": entry.get("bbox") or [],
+            "text": text,
+            "latex": entry.get("latex") or "",
+            "confidence": float(entry.get("confidence") or 0.0),
+        })
+
+    if rows:
+        client.table(TABLE_ANNOTATIONS).insert(rows).execute()
+
+    client.table(TABLE_IMAGES).update({
+        "ocr_completed": True,
+        "annotation_completed": any(r["text"] for r in rows),
+        "reviewed": bool(mark_reviewed),
+        "updated_at": _now(),
+    }).eq("image_id", echd_id).execute()
+
+    return len(rows)
+
+
+def update_image_quality(image_id: str, blur_score=None, lighting_score=None,
+                         duplicate=None, occluded=None, selected=None):
+    """Update quality_metadata fields for one image. Unset args are left alone."""
+    patch = {}
+    for column, value in (
+        ("blur_score", blur_score),
+        ("lighting_score", lighting_score),
+        ("duplicate", duplicate),
+        ("occluded", occluded),
+        ("selected", selected),
+    ):
+        if value is not None:
+            patch[column] = value
+    if not patch:
+        return False
+    patch["updated_at"] = _now()
+    get_client().table(TABLE_IMAGES).update(patch).eq("image_id", image_id).execute()
+    return True
+
+
 # ===========================================================================
 # Stats
 # ===========================================================================

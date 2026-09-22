@@ -200,6 +200,7 @@ dashboard/
   src/api.js           Typed API client for the backend
 scripts/
   run_backend.bat            Windows convenience launcher
+  ingest_folder.py           Bulk-ingest a folder of images, with labels
   sync_local_to_bucket.py    Migrate local images into the shared bucket
   fix_stuck_videos.py        Clear videos left with processing=True
 docs/
