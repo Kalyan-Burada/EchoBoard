@@ -1,4 +1,6 @@
-const BASE = "http://localhost:8000";
+// Base URL of the EchoBoard backend API. Override per-machine via
+// VITE_API_BASE in dashboard/.env.local (see dashboard/.env.example).
+const BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
 
 export const api = {
   // Dashboard stats

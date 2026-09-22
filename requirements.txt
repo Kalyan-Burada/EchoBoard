@@ -1,11 +1,16 @@
-streamlit>=1.30
-opencv-python-headless>=4.9
-pymongo>=4.6
-dnspython>=2.4
-python-dotenv>=1.0
-certifi>=2023.0
-yt-dlp>=2024.0
+# Core API and processing
 fastapi>=0.110
 uvicorn>=0.27
 python-multipart>=0.0.6
-minio>=7.2
+opencv-python-headless>=4.9
+yt-dlp>=2024.0
+
+# Supabase — dataset metadata (PostgreSQL) and image storage
+supabase>=2.9
+
+# Configuration
+python-dotenv>=1.0
+
+# Auto-annotation OCR. Optional: the /api/dataset/images/{id}/ocr endpoint
+# reports that OCR is unavailable if this is not installed.
+rapidocr-onnxruntime>=1.3

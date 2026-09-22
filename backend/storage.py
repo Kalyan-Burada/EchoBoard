@@ -2,82 +2,146 @@
 storage.py
 EchoBoard Dataset Creation Module — Image Storage Layer
 
-Stores original keyframe images in MinIO object storage.
-If MinIO is not available, falls back to local filesystem storage
-under dataset/echoboard-dataset/ mirroring the MinIO bucket structure.
+Stores original keyframe images in Supabase Storage, in the same project
+that holds the dataset metadata (see backend/database.py). One Supabase
+account therefore provides both halves of the dataset, and no collaborator
+has to host or keep running an object-storage server.
 
-IMPORTANT: Images are stored as-is — NO compression, NO cropping, NO modification.
+Two backends are supported, selected explicitly via STORAGE_BACKEND:
+
+  supabase  Supabase Storage bucket. This is the shared backend: every
+            collaborator points at the same project, so images uploaded by
+            one person are immediately readable by everyone.
+
+  local     Plain filesystem storage under dataset/echoboard-dataset/,
+            mirroring the bucket layout. Solo development and offline work
+            only.
+
+There is deliberately NO automatic fallback from 'supabase' to 'local'.
+Metadata lives in the shared database while bytes live in the bucket;
+silently writing bytes to one machine's disk would register rows that every
+collaborator can see but nobody else can read. A misconfigured or
+unreachable bucket therefore raises instead of degrading quietly, matching
+the no-fallback stance in database.py.
+
+Object paths are <subject>/<sequence_id>/<filename> and are stored verbatim
+in dataset_images.image_path, so metadata and bytes stay addressable
+together for later model training.
+
+IMPORTANT: Images are stored as-is — NO compression, NO cropping,
+NO modification of any kind.
 """
 
 import os
-import io
-from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 # ---------------------------------------------------------------------------
-# MinIO Configuration — Loaded from .env
+# Configuration — loaded from .env (see .env.example)
 # ---------------------------------------------------------------------------
-MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "localhost:9000")
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
-MINIO_SECURE = os.environ.get("MINIO_SECURE", "false").lower() == "true"
-MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "echoboard-dataset")
+# "supabase" (shared bucket) or "local" (filesystem, solo development).
+STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "supabase").strip().lower()
 
-# Local fallback directory (mirrors MinIO bucket structure)
+# Storage reuses the same project credentials as the metadata layer.
+SUPABASE_BUCKET = os.environ.get("SUPABASE_BUCKET", "echoboard-dataset").strip()
+
+# Local filesystem directory (mirrors the bucket structure).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_DATASET_DIR = os.path.join(os.path.dirname(BASE_DIR), "dataset", "echoboard-dataset")
 
-USE_MINIO = False
-_minio_client = None
+_VALID_BACKENDS = ("supabase", "local")
+
+# True once init_storage() has verified the Supabase bucket.
+USE_SUPABASE = False
 
 
-def _get_minio_client():
-    """Return the MinIO client, creating it on first call."""
-    global _minio_client
-    if _minio_client is None:
-        try:
-            from minio import Minio
-            import urllib3
-            
-            # Configure a fast connection timeout (2.0s) so if the server is offline or unreachable,
-            # it falls back to local filesystem storage immediately without hanging.
-            timeout = urllib3.Timeout(connect=2.0, read=30.0)
-            retries = urllib3.Retry(total=1, backoff_factor=0.1)
-            http_client = urllib3.PoolManager(timeout=timeout, retries=retries)
-            
-            _minio_client = Minio(
-                MINIO_ENDPOINT,
-                access_key=MINIO_ACCESS_KEY,
-                secret_key=MINIO_SECRET_KEY,
-                secure=MINIO_SECURE,
-                http_client=http_client,
-            )
-        except ImportError:
-            raise RuntimeError("minio package not installed. Run: pip install minio")
-    return _minio_client
+class StorageConfigError(RuntimeError):
+    """Raised when the storage backend is misconfigured or unreachable."""
+
+
+def _bucket():
+    """Return the Supabase Storage bucket proxy for this project."""
+    import database as db
+
+    try:
+        client = db.get_client()
+    except db.DatabaseConfigError as exc:
+        # Storage and metadata share SUPABASE_URL / SUPABASE_SERVICE_KEY.
+        raise StorageConfigError(str(exc)) from exc
+    return client.storage.from_(SUPABASE_BUCKET)
 
 
 def init_storage():
-    """Initialize storage backend. Try MinIO first, fall back to local filesystem."""
-    global USE_MINIO
+    """
+    Initialize and verify the configured storage backend.
+
+    Raises StorageConfigError if STORAGE_BACKEND=supabase and the bucket
+    cannot be reached, so the API refuses to start rather than writing
+    images somewhere collaborators cannot read.
+    """
+    global USE_SUPABASE
+
+    if STORAGE_BACKEND not in _VALID_BACKENDS:
+        raise StorageConfigError(
+            f"STORAGE_BACKEND must be one of {_VALID_BACKENDS}, got '{STORAGE_BACKEND}'."
+        )
+
+    if STORAGE_BACKEND == "local":
+        USE_SUPABASE = False
+        os.makedirs(LOCAL_DATASET_DIR, exist_ok=True)
+        print(f"  Storage: local filesystem ({LOCAL_DATASET_DIR})")
+        print("  NOTE: images are NOT shared with collaborators in this mode.")
+        return
+
+    import database as db
 
     try:
-        client = _get_minio_client()
-        # Test connection by checking if bucket exists
-        if not client.bucket_exists(MINIO_BUCKET):
-            client.make_bucket(MINIO_BUCKET)
-            print(f"  Created MinIO bucket: '{MINIO_BUCKET}'")
-        else:
-            print(f"  MinIO bucket '{MINIO_BUCKET}' ready.")
-        USE_MINIO = True
-        print(f"  Storage: MinIO ({MINIO_ENDPOINT})")
-    except Exception as e:
-        print(f"\n  WARNING: MinIO not available ({e})")
-        print(f"  Falling back to local storage: {LOCAL_DATASET_DIR}\n")
-        USE_MINIO = False
-        os.makedirs(LOCAL_DATASET_DIR, exist_ok=True)
+        client = db.get_client()
+    except db.DatabaseConfigError as exc:
+        raise StorageConfigError(str(exc)) from exc
+
+    try:
+        buckets = client.storage.list_buckets()
+    except Exception as exc:
+        raise StorageConfigError(
+            f"Could not reach Supabase Storage: {exc}\n"
+            "  Check SUPABASE_URL and SUPABASE_SERVICE_KEY in .env "
+            "(see docs/SHARED_SETUP.md)."
+        ) from exc
+
+    names = {getattr(b, "name", None) or (b.get("name") if isinstance(b, dict) else None)
+             for b in (buckets or [])}
+
+    if SUPABASE_BUCKET not in names:
+        # The service_role key may create buckets; try once so first-time
+        # setup does not require a manual step, and report clearly if the
+        # key is not permitted to.
+        try:
+            client.storage.create_bucket(SUPABASE_BUCKET, options={"public": False})
+            print(f"  Created private Supabase Storage bucket '{SUPABASE_BUCKET}'.")
+        except Exception as exc:
+            raise StorageConfigError(
+                f"Supabase Storage bucket '{SUPABASE_BUCKET}' does not exist and "
+                f"could not be created automatically: {exc}\n"
+                "  Create it once in Supabase Dashboard > Storage > New bucket "
+                "(keep it private), then set SUPABASE_BUCKET in .env "
+                "(see docs/SHARED_SETUP.md)."
+            ) from exc
+
+    USE_SUPABASE = True
+    print(f"  Storage: Supabase Storage bucket '{SUPABASE_BUCKET}'")
+
+
+def _local_path(object_path: str) -> str:
+    return os.path.join(LOCAL_DATASET_DIR, object_path.replace("/", os.sep))
+
+
+def _content_type(filename: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".png":
+        return "image/png"
+    return "image/jpeg"
 
 
 def store_image(image_bytes: bytes, subject: str, sequence_id: str,
@@ -85,32 +149,39 @@ def store_image(image_bytes: bytes, subject: str, sequence_id: str,
     """
     Store an original image in the dataset.
 
-    Path structure: echoboard-dataset/<subject>/<sequence_id>/<filename>
+    Path structure: <subject>/<sequence_id>/<filename> within the bucket.
 
-    Returns the full object path (relative to the bucket root).
+    Returns the object path, which is recorded in dataset_images.image_path.
 
     IMPORTANT: The image is stored AS-IS — no compression, no cropping,
     no modification of any kind.
     """
-    object_path = f"{subject}/{sequence_id}/{filename}"
+    parts = [p for p in (subject, sequence_id, filename) if p]
+    return store_object("/".join(parts), image_bytes)
 
-    if USE_MINIO:
-        try:
-            client = _get_minio_client()
-            data = io.BytesIO(image_bytes)
-            client.put_object(
-                MINIO_BUCKET,
-                object_path,
-                data,
-                length=len(image_bytes),
-                content_type="image/jpeg",
-            )
-            return object_path
-        except Exception as e:
-            print(f"  MinIO upload failed: {e}. Falling back to local storage.")
 
-    # Local filesystem fallback
-    local_path = os.path.join(LOCAL_DATASET_DIR, object_path.replace("/", os.sep))
+def store_object(object_path: str, image_bytes: bytes) -> str:
+    """
+    Store bytes at an exact object path, returning that path.
+
+    store_image() builds the conventional <subject>/<sequence_id>/<filename>
+    path and delegates here. Use this directly when a path already exists,
+    for example when migrating local files that are already laid out.
+    """
+    if USE_SUPABASE:
+        # upsert allows re-processing a sequence without a duplicate-object
+        # error, matching the previous object-store behaviour.
+        _bucket().upload(
+            object_path,
+            image_bytes,
+            file_options={
+                "content-type": _content_type(object_path),
+                "upsert": "true",
+            },
+        )
+        return object_path
+
+    local_path = _local_path(object_path)
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
     with open(local_path, "wb") as f:
         f.write(image_bytes)
@@ -119,51 +190,54 @@ def store_image(image_bytes: bytes, subject: str, sequence_id: str,
 
 def get_image(object_path: str) -> bytes:
     """
-    Retrieve an image by its object path.
-    Returns the raw image bytes.
-    If the exact path doesn't exist, tries alternative extensions (.png, .jpg, .jpeg).
+    Retrieve an image by its object path, returning the raw bytes.
+
+    Returns b"" if the object does not exist. If the exact path is missing,
+    alternative image extensions are tried, which tolerates historical
+    .jpeg/.png mismatches between stored metadata and stored bytes.
     """
-    if USE_MINIO:
-        try:
-            client = _get_minio_client()
-            response = client.get_object(MINIO_BUCKET, object_path)
-            data = response.read()
-            response.close()
-            response.release_conn()
-            return data
-        except Exception as e:
-            print(f"  MinIO read failed: {e}. Trying local storage.")
+    if not object_path:
+        return b""
 
-    # Local filesystem fallback — try exact path first, then alternative extensions
-    local_path = os.path.join(LOCAL_DATASET_DIR, object_path.replace("/", os.sep))
-    if os.path.exists(local_path):
-        with open(local_path, "rb") as f:
-            return f.read()
+    if USE_SUPABASE:
+        bucket = _bucket()
+        for candidate in _extension_candidates(object_path):
+            try:
+                data = bucket.download(candidate)
+                if data:
+                    return data
+            except Exception:
+                continue
+        return b""
 
-    # Try alternative extensions (handles .jpeg vs .png mismatch)
-    base, ext = os.path.splitext(local_path)
-    for alt_ext in [".png", ".jpg", ".jpeg"]:
-        if alt_ext != ext:
-            alt_path = base + alt_ext
-            if os.path.exists(alt_path):
-                with open(alt_path, "rb") as f:
-                    return f.read()
-
+    for candidate in _extension_candidates(object_path):
+        local_path = _local_path(candidate)
+        if os.path.exists(local_path):
+            with open(local_path, "rb") as f:
+                return f.read()
     return b""
 
 
-def delete_image(object_path: str):
-    """Delete an image from storage."""
-    if USE_MINIO:
-        try:
-            client = _get_minio_client()
-            client.remove_object(MINIO_BUCKET, object_path)
-            return
-        except Exception as e:
-            print(f"  MinIO delete failed: {e}. Trying local storage.")
+def _extension_candidates(object_path: str) -> list:
+    """The exact path first, then the same path with other image extensions."""
+    base, ext = os.path.splitext(object_path)
+    candidates = [object_path]
+    candidates.extend(
+        base + alt for alt in (".jpg", ".jpeg", ".png") if alt != ext.lower()
+    )
+    return candidates
 
-    # Local filesystem fallback
-    local_path = os.path.join(LOCAL_DATASET_DIR, object_path.replace("/", os.sep))
+
+def delete_image(object_path: str):
+    """Delete an image from storage. Missing objects are ignored."""
+    if not object_path:
+        return
+
+    if USE_SUPABASE:
+        _bucket().remove([object_path])
+        return
+
+    local_path = _local_path(object_path)
     if os.path.exists(local_path):
         os.unlink(local_path)
 
@@ -176,22 +250,46 @@ def list_images(subject: str = None, sequence_id: str = None) -> list:
         if sequence_id:
             prefix = f"{subject}/{sequence_id}/"
 
-    if USE_MINIO:
-        try:
-            client = _get_minio_client()
-            objects = client.list_objects(MINIO_BUCKET, prefix=prefix, recursive=True)
-            return [obj.object_name for obj in objects if obj.object_name.endswith((".jpg", ".jpeg", ".png"))]
-        except Exception as e:
-            print(f"  MinIO list failed: {e}. Trying local storage.")
+    if USE_SUPABASE:
+        return _list_supabase(prefix.rstrip("/"))
 
-    # Local filesystem fallback
     results = []
-    search_dir = os.path.join(LOCAL_DATASET_DIR, prefix.replace("/", os.sep))
+    search_dir = _local_path(prefix) if prefix else LOCAL_DATASET_DIR
     if os.path.exists(search_dir):
-        for root, dirs, files in os.walk(search_dir):
-            for f in files:
-                if f.lower().endswith((".jpg", ".jpeg", ".png")):
-                    full = os.path.join(root, f)
+        for root, _dirs, files in os.walk(search_dir):
+            for name in files:
+                if name.lower().endswith((".jpg", ".jpeg", ".png")):
+                    full = os.path.join(root, name)
                     rel = os.path.relpath(full, LOCAL_DATASET_DIR).replace(os.sep, "/")
                     results.append(rel)
+    return results
+
+
+def _list_supabase(prefix: str, _depth: int = 0) -> list:
+    """
+    Recursively list image objects under a prefix.
+
+    Supabase Storage lists one folder level at a time, so directories are
+    walked explicitly. Entries without an id are folders.
+    """
+    if _depth > 8:  # Guard against unexpectedly deep nesting.
+        return []
+
+    try:
+        entries = _bucket().list(prefix) or []
+    except Exception:
+        return []
+
+    results = []
+    for entry in entries:
+        name = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
+        if not name:
+            continue
+        child = f"{prefix}/{name}" if prefix else name
+
+        is_folder = (entry.get("id") is None) if isinstance(entry, dict) else False
+        if is_folder:
+            results.extend(_list_supabase(child, _depth + 1))
+        elif name.lower().endswith((".jpg", ".jpeg", ".png")):
+            results.append(child)
     return results

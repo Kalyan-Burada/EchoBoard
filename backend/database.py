@@ -1,323 +1,663 @@
 """
 database.py
-EchoBoard Dataset — MongoDB Atlas Database Layer
+EchoBoard Dataset — Supabase (PostgreSQL) metadata layer
 
-Stores image metadata in MongoDB Atlas using the ECHD schema.
-No SQLite fallback. If MongoDB is unreachable, the app will raise an error.
+Stores dataset metadata in Supabase using the ECHD schema defined in
+supabase/schema.sql. Access goes through the Supabase REST API with the
+service_role key, so no direct PostgreSQL connection is required and the
+backend works from any network.
+
+The previous MongoDB implementation stored one document per image with
+nested sub-documents. Those are normalised into columns and a child
+`annotations` table here, and every read reassembles the original nested
+shape:
+
+    {
+      "id": <uuid>,                  "image_id": "IMG0001",
+      "image_name": ..., "image_path": ...,
+      "sequence_id": ..., "subject": ..., "board_type": ...,
+      "writer_id": ..., "video_id": ..., "frame_index": ...,
+      "timestamp_ms": ..., "change_score": ..., "dataset_version": ...,
+      "image_metadata":    {"width", "height", "format", "size_kb"},
+      "annotations":       [{"annotation_id", "class", "bbox", "text",
+                             "latex", "confidence"}],
+      "quality_metadata":  {"blur_score", "lighting_score", "duplicate",
+                            "occluded", "selected"},
+      "processing_status": {"ocr_completed", "annotation_completed",
+                            "reviewed"},
+      "created_at": ..., "updated_at": ...
+    }
+
+Existing API responses and the dashboard therefore see the same structure
+they saw under MongoDB.
+
+There is no local database fallback: if Supabase is unreachable or the
+schema has not been applied, startup fails with an actionable message
+rather than silently accepting data that collaborators cannot read.
 """
 
 import os
-import certifi
-from datetime import datetime
-import threading
-from pymongo import MongoClient, ASCENDING, DESCENDING
-from bson import ObjectId
+from datetime import datetime, timezone
+
 from dotenv import load_dotenv
 
-# Load environment variables from .env
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 # ===========================================================================
-# Database Configuration
+# Configuration
 # ===========================================================================
-MONGO_URI = os.getenv("MONGODB_URI")
-DB_NAME = os.getenv("DATABASE_NAME", "EchoBoardDB")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+
+# The service_role key bypasses Row Level Security and must stay server-side.
+# SUPABASE_KEY is accepted as an alias for convenience.
+SUPABASE_SERVICE_KEY = (
+    os.getenv("SUPABASE_SERVICE_KEY", "") or os.getenv("SUPABASE_KEY", "")
+).strip()
+
+TABLE_IMAGES = "dataset_images"
+TABLE_ANNOTATIONS = "annotations"
+TABLE_VIDEOS = "videos"
+TABLE_VERSIONS = "dataset_versions"
+
+DEFAULT_VERSION = "ECHD_v1"
 
 _client = None
-_id_lock = threading.Lock()
 
 
-def _create_mongo_client(timeout_ms=15000):
-    """Try multiple TLS configurations to connect to MongoDB Atlas."""
-    # Attempt 1: Standard TLS with system CA bundle
-    try:
-        client = MongoClient(
-            MONGO_URI,
-            tlsCAFile=certifi.where(),
-            serverSelectionTimeoutMS=timeout_ms,
-            connectTimeoutMS=timeout_ms,
-            socketTimeoutMS=30000,
-        )
-        client.admin.command("ping")
-        return client
-    except Exception:
-        pass
-
-    # Attempt 2: TLS with relaxed certificate validation (for restrictive networks)
-    client = MongoClient(
-        MONGO_URI,
-        tls=True,
-        tlsAllowInvalidCertificates=True,
-        serverSelectionTimeoutMS=timeout_ms,
-        connectTimeoutMS=timeout_ms,
-        socketTimeoutMS=30000,
-    )
-    client.admin.command("ping")
-    return client
+class DatabaseConfigError(RuntimeError):
+    """Raised when Supabase is misconfigured, unreachable, or unmigrated."""
 
 
-def get_db():
+# ===========================================================================
+# Connection
+# ===========================================================================
+def get_client():
+    """Return the shared Supabase client, creating it on first use."""
     global _client
-    if _client is None:
-        if not MONGO_URI:
-            raise Exception("MONGODB_URI is not set in environment variables.")
-        _client = _create_mongo_client()
-    return _client[DB_NAME]
+    if _client is not None:
+        return _client
+
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        missing = []
+        if not SUPABASE_URL:
+            missing.append("SUPABASE_URL")
+        if not SUPABASE_SERVICE_KEY:
+            missing.append("SUPABASE_SERVICE_KEY")
+        raise DatabaseConfigError(
+            "Missing required Supabase settings: "
+            + ", ".join(missing)
+            + ". Copy .env.example to .env and fill in your project URL and "
+            "service_role key (see docs/SHARED_SETUP.md)."
+        )
+
+    try:
+        from supabase import create_client
+    except ImportError as exc:  # pragma: no cover - dependency guard
+        raise DatabaseConfigError(
+            "The 'supabase' package is required. "
+            "Install dependencies with: pip install -r requirements.txt"
+        ) from exc
+
+    _client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+    return _client
+
+
+# Backwards-compatible alias. The MongoDB layer exposed get_db(); callers that
+# only need a handle keep working, though the returned object is now a
+# Supabase client rather than a pymongo Database.
+get_db = get_client
 
 
 def init_db():
-    """Initialize MongoDB collections and indexes.
-    If MongoDB is unreachable at startup, print a warning but don't crash.
-    The connection will be retried when get_db() is called during upload.
     """
-    if not MONGO_URI:
-        raise Exception("MONGODB_URI is not set.")
+    Verify that Supabase is reachable and that the ECHD schema is present.
+
+    Raises DatabaseConfigError with actionable guidance on failure, so the
+    API refuses to start rather than accepting uploads it cannot register.
+    """
+    client = get_client()
+
     try:
-        db = get_db()
-        db.dataset_images.create_index([("image_id", ASCENDING)], unique=True)
-        db.dataset_images.create_index([("created_at", DESCENDING)])
-        if db.counters.find_one({"_id": "image_counter"}) is None:
-            db.counters.insert_one({"_id": "image_counter", "seq": 0})
-        if db.counters.find_one({"_id": "annotation_counter"}) is None:
-            db.counters.insert_one({"_id": "annotation_counter", "seq": 0})
-        print(f"  Database: MongoDB Atlas — '{DB_NAME}' [OK] Connected")
-    except Exception as e:
-        # Reset client so get_db() will retry on next call
-        global _client
-        _client = None
-        print(f"  Database: MongoDB Atlas — DEFERRED (will retry on upload)")
-        print(f"  Reason: {str(e)[:100]}")
-        print(f"  Tip: Switch to mobile hotspot if on a restrictive network.")
+        client.table(TABLE_VERSIONS).select("version_id").limit(1).execute()
+    except Exception as exc:
+        message = str(exc)
+        if "does not exist" in message or "PGRST205" in message or "42P01" in message:
+            raise DatabaseConfigError(
+                "Connected to Supabase, but the ECHD schema is missing.\n"
+                "  Apply it once: Supabase Dashboard > SQL Editor > paste the\n"
+                "  contents of supabase/schema.sql > Run.\n"
+                f"  (detail: {message[:200]})"
+            ) from exc
+        raise DatabaseConfigError(
+            f"Could not reach Supabase at '{SUPABASE_URL}': {message[:200]}\n"
+            "  Check SUPABASE_URL and SUPABASE_SERVICE_KEY in .env "
+            "(see docs/SHARED_SETUP.md)."
+        ) from exc
 
-
-
-# ---------------------------------------------------------------------------
-# Sequential ID Generators
-# ---------------------------------------------------------------------------
-def _next_image_id():
-    with _id_lock:
-        db = get_db()
-        result = db.counters.find_one_and_update(
-            {"_id": "image_counter"},
-            {"$inc": {"seq": 1}},
-            return_document=True,
+    # Ensure the default dataset version exists, so inserts satisfy the
+    # dataset_version foreign key on a freshly migrated project.
+    try:
+        existing = (
+            client.table(TABLE_VERSIONS)
+            .select("version_id")
+            .eq("version_id", DEFAULT_VERSION)
+            .execute()
         )
-        return f"IMG{result['seq']:04d}"
+        if not existing.data:
+            client.table(TABLE_VERSIONS).insert(
+                {"version_id": DEFAULT_VERSION, "description": "Initial version"}
+            ).execute()
+    except Exception:
+        # Non-fatal: the schema migration already seeds this row.
+        pass
+
+    print(f"  Database: Supabase — {SUPABASE_URL} [OK] Connected")
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ===========================================================================
+# Sequential ECHD identifiers
+# ===========================================================================
+def _next_image_id():
+    """Allocate the next IMGxxxx id using a PostgreSQL sequence (race-free)."""
+    result = get_client().rpc("next_image_id").execute()
+    return result.data
 
 
 def _next_annotation_id():
-    with _id_lock:
-        db = get_db()
-        result = db.counters.find_one_and_update(
-            {"_id": "annotation_counter"},
-            {"$inc": {"seq": 1}},
-            upsert=True,
-            return_document=True,
-        )
-        return f"ANN{result['seq']:04d}"
+    """Allocate the next ANNxxxx id using a PostgreSQL sequence (race-free)."""
+    result = get_client().rpc("next_annotation_id").execute()
+    return result.data
 
 
-# ---------------------------------------------------------------------------
-# Core CRUD — Dataset Images (new ECHD schema)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Row shaping — flat SQL rows to the nested ECHD structure
+# ===========================================================================
+_ANNOTATION_FIELDS = ("annotation_id", "class", "bbox", "text", "latex", "confidence")
+
+
+def _shape_annotation(row):
+    return {field: row.get(field) for field in _ANNOTATION_FIELDS}
+
+
+def _shape_image(row):
+    """Convert a dataset_images row (optionally with embedded annotations)."""
+    if row is None:
+        return None
+
+    annotations = row.get("annotations") or []
+    if isinstance(annotations, dict):  # single embedded row
+        annotations = [annotations]
+    annotations = [_shape_annotation(a) for a in annotations]
+    annotations.sort(key=lambda a: a.get("annotation_id") or "")
+
+    return {
+        "id": row.get("id"),
+        "image_id": row.get("image_id"),
+        "image_name": row.get("image_name"),
+        "image_path": row.get("image_path"),
+        # Provenance — required for downstream model training.
+        "sequence_id": row.get("sequence_id"),
+        "subject": row.get("subject"),
+        "board_type": row.get("board_type"),
+        "writer_id": row.get("writer_id"),
+        "uploaded_by": row.get("uploaded_by"),
+        "video_id": row.get("video_id"),
+        "frame_index": row.get("frame_index"),
+        "timestamp_ms": row.get("timestamp_ms"),
+        "change_score": row.get("change_score"),
+        "dataset_version": row.get("dataset_version"),
+        "image_metadata": {
+            "width": row.get("width"),
+            "height": row.get("height"),
+            "format": row.get("format"),
+            "size_kb": row.get("size_kb"),
+        },
+        "annotations": annotations,
+        "quality_metadata": {
+            "blur_score": row.get("blur_score"),
+            "lighting_score": row.get("lighting_score"),
+            "duplicate": row.get("duplicate"),
+            "occluded": row.get("occluded"),
+            "selected": row.get("selected"),
+        },
+        "processing_status": {
+            "ocr_completed": row.get("ocr_completed"),
+            "annotation_completed": row.get("annotation_completed"),
+            "reviewed": row.get("reviewed"),
+        },
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+# PostgREST embedding: fetch each image with its annotations in one request.
+_IMAGE_SELECT = f"*, {TABLE_ANNOTATIONS}(*)"
+
+
+# ===========================================================================
+# Core CRUD — Dataset Images
+# ===========================================================================
 def insert_dataset_image(
-    image_name: str,
     image_path: str,
-    width: int,
-    height: int,
-    format_type: str,
-    size_kb: int,
+    image_name: str = None,
+    # Provenance (video and direct-upload pipelines)
+    sequence_id: str = None,
+    subject: str = None,
+    board_type: str = None,
+    writer_id: str = None,
+    uploaded_by: str = None,
+    video_id: str = None,
+    frame_index: int = 0,
+    timestamp_ms: int = 0,
+    change_score: float = 0.0,
+    dataset_version: str = None,
+    # image_metadata
+    width: int = 0,
+    height: int = 0,
+    format_type: str = None,
+    size_kb: int = 0,
+    # Optional first annotation
     annotation_text: str = "",
     annotation_class: str = "Text",
+    **_ignored,
 ):
-    """Insert one image record using the ECHD schema."""
-    image_id = _next_image_id()
-    now = datetime.utcnow().isoformat() + "Z"
+    """
+    Insert one image record using the ECHD schema.
 
-    # Build annotations array
-    annotations = []
-    if annotation_text.strip():
-        ann_id = _next_annotation_id()
-        annotations.append({
-            "annotation_id": ann_id,
-            "class": annotation_class,
+    Accepts both upload conventions used by the API: the keyframe pipeline
+    supplies provenance (sequence_id, subject, frame_index, video_id, ...),
+    while direct image upload supplies intrinsic metadata (image_name,
+    width, height, format_type, size_kb). Either subset may be omitted.
+
+    Returns the inserted record in the nested ECHD shape.
+    """
+    client = get_client()
+    image_id = _next_image_id()
+    now = _now()
+
+    if not image_name:
+        image_name = os.path.basename(image_path or "") or image_id
+    if not format_type:
+        format_type = (os.path.splitext(image_name)[1] or ".jpg").lstrip(".").lower()
+
+    annotation_text = (annotation_text or "").strip()
+
+    row = {
+        "image_id": image_id,
+        "image_name": image_name,
+        "image_path": image_path,
+        "sequence_id": sequence_id,
+        "subject": subject,
+        "board_type": board_type,
+        "writer_id": writer_id,
+        "uploaded_by": uploaded_by or writer_id,
+        "video_id": video_id or None,
+        "frame_index": int(frame_index or 0),
+        "timestamp_ms": int(timestamp_ms or 0),
+        "change_score": float(change_score or 0.0),
+        "dataset_version": dataset_version or get_current_version(),
+        "width": int(width or 0),
+        "height": int(height or 0),
+        "format": format_type,
+        "size_kb": int(size_kb or 0),
+        "annotation_completed": bool(annotation_text),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    inserted = client.table(TABLE_IMAGES).insert(row).execute()
+    record = inserted.data[0] if inserted.data else row
+    record["annotations"] = []
+
+    if annotation_text:
+        annotation = {
+            "annotation_id": _next_annotation_id(),
+            "image_id": image_id,
+            "class": annotation_class or "Text",
             "bbox": [],
             "text": annotation_text,
             "latex": "",
             "confidence": 0.0,
-        })
+        }
+        client.table(TABLE_ANNOTATIONS).insert(annotation).execute()
+        record["annotations"] = [annotation]
 
-    doc = {
-        "image_id": image_id,
-        "image_name": image_name,
-        "image_path": image_path,
-        "image_metadata": {
-            "width": width,
-            "height": height,
-            "format": format_type,
-            "size_kb": size_kb,
-        },
-        "annotations": annotations,
-        "quality_metadata": {
-            "blur_score": 0.0,
-            "lighting_score": 0,
-            "duplicate": False,
-            "occluded": False,
-            "selected": True,
-        },
-        "processing_status": {
-            "ocr_completed": False,
-            "annotation_completed": bool(annotation_text.strip()),
-            "reviewed": False,
-        },
-        "created_at": now,
-        "updated_at": now,
-    }
-    db = get_db()
-    result = db.dataset_images.insert_one(doc)
-    doc["_id"] = str(result.inserted_id)
-    return doc
+    return _shape_image(record)
 
 
-def get_dataset_images(limit=500, **kwargs):
-    """Return all dataset images, newest first."""
-    db = get_db()
-    query = {}
-    rows = db.dataset_images.find(query).sort("created_at", DESCENDING).limit(limit)
-    results = []
-    for r in rows:
-        r["id"] = str(r.pop("_id"))
-        # Normalize fields for frontend compatibility
-        if "image_id" not in r:
-            r["image_id"] = r.get("image_name", "unknown")
-        if "image_path" not in r:
-            r["image_path"] = ""
-        results.append(r)
-    return results
+def get_dataset_images(limit=500, sequence_id=None, subject=None, video_id=None,
+                       reviewed=None, **_ignored):
+    """
+    Return dataset images, newest first, with their annotations.
+
+    Filters are optional and applied server-side. The MongoDB implementation
+    accepted these keyword arguments but ignored them, so callers that pass
+    sequence_id now receive a correctly scoped result.
+    """
+    query = (
+        get_client()
+        .table(TABLE_IMAGES)
+        .select(_IMAGE_SELECT)
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if sequence_id is not None:
+        query = query.eq("sequence_id", sequence_id)
+    if subject is not None:
+        query = query.eq("subject", subject)
+    if video_id is not None:
+        query = query.eq("video_id", video_id)
+    if reviewed is not None:
+        query = query.eq("reviewed", reviewed)
+
+    return [_shape_image(row) for row in (query.execute().data or [])]
 
 
 def get_dataset_image_by_id(image_id):
     """Look up by ECHD image_id (e.g. IMG0001)."""
-    db = get_db()
-    r = db.dataset_images.find_one({"image_id": image_id})
-    if r:
-        r["id"] = str(r.pop("_id"))
-    return r
+    result = (
+        get_client()
+        .table(TABLE_IMAGES)
+        .select(_IMAGE_SELECT)
+        .eq("image_id", image_id)
+        .limit(1)
+        .execute()
+    )
+    return _shape_image(result.data[0]) if result.data else None
 
 
 def get_dataset_image_by_internal_id(internal_id):
-    """Look up by MongoDB ObjectId string."""
+    """Look up by the internal UUID primary key."""
     try:
-        db = get_db()
-        r = db.dataset_images.find_one({"_id": ObjectId(internal_id)})
-        if r:
-            r["id"] = str(r.pop("_id"))
-        return r
+        result = (
+            get_client()
+            .table(TABLE_IMAGES)
+            .select(_IMAGE_SELECT)
+            .eq("id", str(internal_id))
+            .limit(1)
+            .execute()
+        )
+        return _shape_image(result.data[0]) if result.data else None
     except Exception:
+        # Not a valid UUID, or a transient lookup failure.
         return None
 
 
 def delete_dataset_image(image_id):
-    db = get_db()
-    db.dataset_images.delete_one({"image_id": image_id})
+    """Delete an image record. Its annotations cascade in the database."""
+    get_client().table(TABLE_IMAGES).delete().eq("image_id", image_id).execute()
 
 
-def update_dataset_image_annotation(image_id: str, annotation_text: str, annotation_class: str = "Text", reviewed: bool = True):
-    """Update annotation text, class, and review status for a dataset image."""
-    db = get_db()
+def update_dataset_image_annotation(image_id: str, annotation_text: str,
+                                    annotation_class: str = "Text",
+                                    reviewed: bool = True):
+    """
+    Replace the annotations for an image and update its processing status.
 
-    # Try matching by image_id or ObjectId
-    doc = db.dataset_images.find_one({"image_id": image_id})
-    filter_query = {"image_id": image_id}
-    if not doc:
-        try:
-            filter_query = {"_id": ObjectId(image_id)}
-            doc = db.dataset_images.find_one(filter_query)
-        except Exception:
-            pass
+    Accepts either an ECHD image_id or the internal UUID. Returns False if
+    no matching image exists.
+    """
+    client = get_client()
 
-    if not doc:
+    record = get_dataset_image_by_id(image_id) or get_dataset_image_by_internal_id(image_id)
+    if not record:
         return False
 
-    ann_id = _next_annotation_id()
-    ann = {
-        "annotation_id": ann_id,
-        "class": annotation_class,
+    echd_id = record["image_id"]
+    annotation_text = (annotation_text or "").strip()
+
+    # Mirrors the previous behaviour of replacing the annotations array.
+    client.table(TABLE_ANNOTATIONS).delete().eq("image_id", echd_id).execute()
+    client.table(TABLE_ANNOTATIONS).insert({
+        "annotation_id": _next_annotation_id(),
+        "image_id": echd_id,
+        "class": annotation_class or "Text",
         "bbox": [],
-        "text": annotation_text.strip(),
+        "text": annotation_text,
         "latex": "",
         "confidence": 1.0 if reviewed else 0.8,
-    }
+    }).execute()
 
-    db.dataset_images.update_one(
-        filter_query,
-        {
-            "$set": {
-                "annotations": [ann],
-                "processing_status.ocr_completed": True,
-                "processing_status.annotation_completed": bool(annotation_text.strip()),
-                "processing_status.reviewed": reviewed,
-                "updated_at": datetime.utcnow().isoformat() + "Z",
-            }
-        }
-    )
+    client.table(TABLE_IMAGES).update({
+        "ocr_completed": True,
+        "annotation_completed": bool(annotation_text),
+        "reviewed": reviewed,
+        "updated_at": _now(),
+    }).eq("image_id", echd_id).execute()
+
     return True
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Stats
-# ---------------------------------------------------------------------------
+# ===========================================================================
+def _count(table, **filters):
+    query = get_client().table(table).select("*", count="exact").limit(1)
+    for column, value in filters.items():
+        query = query.eq(column, value)
+    return query.execute().count or 0
+
+
 def get_stats():
-    db = get_db()
-    total = db.dataset_images.count_documents({})
-    annotated = db.dataset_images.count_documents({"processing_status.annotation_completed": True})
-    total_videos = db.videos.count_documents({}) if "videos" in db.list_collection_names() else 0
+    total = _count(TABLE_IMAGES)
+    annotated = _count(TABLE_IMAGES, annotation_completed=True)
     return {
-        "total_videos": total_videos,
+        "total_videos": _count(TABLE_VIDEOS),
         "total_images": total,
         "pending_annotations": total - annotated,
         "completed_annotations": annotated,
-        "current_version": "ECHD_v1",
+        "current_version": get_current_version(),
     }
 
 
-# ---------------------------------------------------------------------------
-# Stub functions for legacy API endpoints (keeps api.py from crashing)
-# ---------------------------------------------------------------------------
-def get_videos(limit=50):
-    return []
-
-def get_video(video_id):
-    return None
-
+# ===========================================================================
+# Videos
+#
+# These were stubs under MongoDB (insert_video returned the literal string
+# "stub_video_id" and get_videos returned []), which left the dashboard's
+# video list permanently empty. They are backed by a real table now.
+# ===========================================================================
 def insert_video(filename="", duration_sec=0, total_frames=0, fps=0, processing=True):
-    return "stub_video_id"
+    """Create a video row and return its UUID as a string."""
+    result = get_client().table(TABLE_VIDEOS).insert({
+        "filename": filename or "",
+        "duration_sec": float(duration_sec or 0),
+        "total_frames": int(total_frames or 0),
+        "fps": float(fps or 0),
+        "processing": bool(processing),
+    }).execute()
+    return str(result.data[0]["id"])
+
 
 def update_video(video_id="", duration_sec=0, total_frames=0, fps=0, processing=False):
-    pass
+    """Update a video's measured properties and processing flag."""
+    if not video_id:
+        return
+    get_client().table(TABLE_VIDEOS).update({
+        "duration_sec": float(duration_sec or 0),
+        "total_frames": int(total_frames or 0),
+        "fps": float(fps or 0),
+        "processing": bool(processing),
+        "updated_at": _now(),
+    }).eq("id", str(video_id)).execute()
+
+
+def set_video_processing(video_id, processing: bool):
+    """
+    Flip only a video's processing flag.
+
+    update_video() overwrites the measured duration/frames/fps, so callers
+    that merely want to mark processing finished (the stop endpoint, error
+    paths) must use this instead or they would zero out real measurements.
+    """
+    if not video_id:
+        return
+    get_client().table(TABLE_VIDEOS).update({
+        "processing": bool(processing),
+        "updated_at": _now(),
+    }).eq("id", str(video_id)).execute()
+
+
+def delete_images_for_video(video_id):
+    """Delete every dataset image row belonging to one video."""
+    if not video_id:
+        return
+    get_client().table(TABLE_IMAGES).delete().eq("video_id", str(video_id)).execute()
+
+
+def get_videos(limit=50):
+    """Return videos, newest first, each with its captured keyframe count."""
+    rows = (
+        get_client()
+        .table(TABLE_VIDEOS)
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+    for row in rows:
+        row["id"] = str(row["id"])
+        row["keyframe_count"] = _count(TABLE_IMAGES, video_id=row["id"])
+    return rows
+
+
+def get_video(video_id):
+    if not video_id:
+        return None
+    try:
+        result = (
+            get_client()
+            .table(TABLE_VIDEOS)
+            .select("*")
+            .eq("id", str(video_id))
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    if not result.data:
+        return None
+    row = result.data[0]
+    row["id"] = str(row["id"])
+    row["keyframe_count"] = _count(TABLE_IMAGES, video_id=row["id"])
+    return row
+
 
 def get_images_for_video(video_id):
-    return []
+    """Return every dataset image extracted from one video, in frame order."""
+    if not video_id:
+        return []
+    try:
+        rows = (
+            get_client()
+            .table(TABLE_IMAGES)
+            .select(_IMAGE_SELECT)
+            .eq("video_id", str(video_id))
+            .order("frame_index")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return []
+    return [_shape_image(row) for row in rows]
+
 
 def delete_video(video_id):
-    pass
+    """
+    Delete a video row.
 
+    Its images' video_id is set to null by the foreign key, so callers that
+    also want the image records removed should delete them first, as the
+    delete-video endpoint does.
+    """
+    if not video_id:
+        return
+    get_client().table(TABLE_VIDEOS).delete().eq("id", str(video_id)).execute()
+
+
+# ===========================================================================
+# Dataset versions
+# ===========================================================================
 def get_current_version():
-    return "ECHD_v1"
+    """Return the newest dataset version id, seeding ECHD_v1 if empty."""
+    try:
+        result = (
+            get_client()
+            .table(TABLE_VERSIONS)
+            .select("version_id")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]["version_id"]
+    except Exception:
+        pass
+    return DEFAULT_VERSION
+
 
 def get_all_versions():
-    return [{"version_id": "ECHD_v1", "description": "Initial version"}]
+    """Return every dataset version, newest first."""
+    try:
+        return (
+            get_client()
+            .table(TABLE_VERSIONS)
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:
+        return [{"version_id": DEFAULT_VERSION, "description": "Initial version"}]
+
 
 def create_new_version(description=""):
-    return "ECHD_v2"
+    """
+    Create the next sequential dataset version (ECHD_v1 -> ECHD_v2 -> ...).
+
+    Returns the new version id. This was previously a stub that always
+    returned "ECHD_v2" without persisting anything.
+    """
+    client = get_client()
+    existing = client.table(TABLE_VERSIONS).select("version_id").execute().data or []
+
+    highest = 0
+    for row in existing:
+        version_id = row.get("version_id") or ""
+        if version_id.startswith("ECHD_v"):
+            suffix = version_id[len("ECHD_v"):]
+            if suffix.isdigit():
+                highest = max(highest, int(suffix))
+
+    new_version = f"ECHD_v{highest + 1}"
+    client.table(TABLE_VERSIONS).insert({
+        "version_id": new_version,
+        "description": description or "",
+    }).execute()
+    return new_version
 
 
-# ---------------------------------------------------------------------------
-# Data Purge (admin utility)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Data purge (admin utility)
+# ===========================================================================
 def purge_all():
-    """Delete ALL data from ALL collections. Use with extreme caution."""
-    db = get_db()
-    db.dataset_images.drop()
-    db.counters.drop()
-    print("  All MongoDB collections purged.")
+    """Delete ALL dataset rows. Use with extreme caution."""
+    client = get_client()
+    # Annotations cascade from dataset_images, but clear them explicitly so
+    # the operation is obvious in the logs.
+    # PostgREST requires a filter on delete, so each uses a predicate that
+    # matches every row. Note PostgreSQL rejects NUL characters in string
+    # literals, so a NUL sentinel cannot be used here.
+    never_a_uuid = "00000000-0000-0000-0000-000000000000"
+    client.table(TABLE_ANNOTATIONS).delete().neq("annotation_id", "").execute()
+    client.table(TABLE_IMAGES).delete().neq("image_id", "").execute()
+    client.table(TABLE_VIDEOS).delete().neq("id", never_a_uuid).execute()
+    print("  All Supabase dataset rows purged.")
