@@ -49,6 +49,20 @@ sys.path.insert(0, os.path.join(project_dir, "backend"))
 # Annotation classes that correspond to a localisable block of writing.
 TEXT_LIKE = {"Text", "Header", "Equation", "Code"}
 
+# Detector class vocabulary (the six categories in the project spec). The
+# order defines the numeric class id written to YOLO label files.
+DETECTOR_CLASSES = ["Text", "Heading", "Formula", "Equation", "Diagram", "Table"]
+
+# Dataset annotation classes -> detector classes. Rule and Illegible have no
+# detector equivalent and are skipped.
+CLASS_MAP = {
+    "Text": "Text",
+    "Header": "Heading",
+    "Equation": "Equation",
+    "Code": "Text",
+    "Diagram": "Diagram",
+}
+
 
 def propose(image_bgr):
     """Return [x_min, y_min, x_max, y_max] line proposals in reading order."""
@@ -141,6 +155,41 @@ def to_normalised(box, width, height):
             round((x2 - x1) / width, 6), round((y2 - y1) / height, 6)]
 
 
+def write_yolo_labels(out_dir, image_name, image_bgr, boxes, annotation_classes):
+    """
+    Write a YOLO label file beside a copy of the image.
+
+    LabelImg and most annotation tools open a folder and load any label file
+    matching the image name, so exporting here means every image opens with
+    its boxes already drawn — correcting them is far faster than drawing
+    from scratch.
+
+    Format per line: <class_id> <x_center> <y_center> <width> <height>,
+    all normalised to [0, 1].
+    """
+    import cv2
+
+    os.makedirs(out_dir, exist_ok=True)
+    cv2.imwrite(os.path.join(out_dir, image_name), image_bgr)
+
+    h, w = image_bgr.shape[:2]
+    stem = os.path.splitext(image_name)[0]
+    with open(os.path.join(out_dir, f"{stem}.txt"), "w") as fh:
+        for i, box in enumerate(boxes):
+            # Use the matching annotation's class when we have one, else Text:
+            # the class is the cheapest thing to fix in the editor.
+            name = annotation_classes[i] if i < len(annotation_classes) else "Text"
+            name = CLASS_MAP.get(name, "Text")
+            class_id = DETECTOR_CLASSES.index(name)
+            xc, yc, bw, bh = to_normalised(box, w, h)
+            fh.write(f"{class_id} {xc:.6f} {yc:.6f} {bw:.6f} {bh:.6f}\n")
+
+    classes_path = os.path.join(out_dir, "classes.txt")
+    if not os.path.exists(classes_path):
+        with open(classes_path, "w") as fh:
+            fh.write("\n".join(DETECTOR_CLASSES) + "\n")
+
+
 def draw_preview(image_bgr, boxes, path):
     import cv2
     canvas = image_bgr.copy()
@@ -161,6 +210,10 @@ def main():
     parser.add_argument("--report", default="runs/boxes/proposals.json")
     parser.add_argument("--limit", type=int, default=0, help="0 = all images")
     parser.add_argument("--no-preview", action="store_true")
+    parser.add_argument("--export-yolo", metavar="DIR", default=None,
+                        help="Also write images + YOLO label files to DIR, so an "
+                             "editor such as labelImg opens them with boxes "
+                             "already drawn for correction.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Propose and preview, write nothing to the database.")
     args = parser.parse_args()
@@ -229,6 +282,10 @@ def main():
             mismatched += 1
 
         safe = record["id"].replace("/", "_")
+        if args.export_yolo:
+            write_yolo_labels(args.export_yolo, safe if safe.endswith((".jpg", ".png"))
+                              else f"{safe}.jpg", img, boxes,
+                              [a.get("class", "Text") for a in targets])
         if not args.no_preview:
             draw_preview(img, boxes, os.path.join(args.preview_dir, f"{safe}.jpg"))
 
@@ -270,6 +327,9 @@ def main():
     print(f"  report               : {args.report}")
     if not args.no_preview:
         print(f"  previews             : {args.preview_dir}/")
+    if args.export_yolo:
+        print(f"  YOLO export          : {args.export_yolo}/  "
+              f"(open with: labelImg {args.export_yolo})")
     print("\n  Proposals are a starting point. Review the previews, correct what is")
     print("  wrong, and only then treat the boxes as ground truth.")
     return 0
