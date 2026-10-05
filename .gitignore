@@ -12,3 +12,23 @@ dataset/
 minio-server/
 dashboard/.env.local
 dashboard/.env
+boards/
+boards_2/
+boards_2/
+boards_3/
+boards_4/
+
+# Training artifacts and derived crops (large, and derived from student images)
+runs/
+crops/
+crops_v2/
+dataset_yolo/
+boards.zip
+*.bak
+*.bak2
+
+# Scratch detection outputs
+out*.jpg
+out*.json
+f[0-9].jpg
+m[0-9].jpg

@@ -46,6 +46,26 @@ export const api = {
   getDatasetImage: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}`).then(r => r.json()),
   deleteDatasetImage: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}`, { method: "DELETE" }).then(r => r.json()),
   runOcr: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}/ocr`, { method: "POST" }).then(r => r.json()),
+
+  // Region detection: proposed boxes + CNN class per region
+  detectRegions: (imageId, persist = false) =>
+    fetch(`${BASE}/api/dataset/images/${imageId}/detect?persist=${persist}`, { method: "POST" })
+      .then(async r => {
+        const body = await r.json();
+        if (!r.ok) throw new Error(body.detail || "Detection failed");
+        return body;
+      }),
+  // Run the pipeline on a brand-new image without ingesting it first
+  detectUpload: (file) => {
+    const form = new FormData();
+    form.append("image", file);
+    return fetch(`${BASE}/api/detect/upload`, { method: "POST", body: form })
+      .then(async r => {
+        const body = await r.json();
+        if (!r.ok) throw new Error(body.detail || "Detection failed");
+        return body;
+      });
+  },
   updateAnnotation: (imageId, text, annotationClass = "Text", reviewed = true) =>
     fetch(`${BASE}/api/dataset/images/${imageId}/annotation`, {
       method: "PUT",

@@ -104,7 +104,138 @@ def propose(image_bgr):
             continue           # a box with almost no ink is board texture
         fragments.append([x, y, x + bw, y + bh])
 
-    return group_into_lines(fragments, w, h)
+    fragments = [f for f in fragments if _is_board_content(image_bgr, f)]
+    blocks = group_into_lines(fragments, w, h)
+
+    # Sloped writing merges into multi-line blocks; cut those back into lines
+    # so each proposal is something a CRNN can actually read.
+    lines = []
+    for block in blocks:
+        lines.extend(split_into_lines(binary, block, image_height=h))
+    lines.sort(key=lambda b: (round(b[1] / max(h * 0.06, 1)), b[0]))
+    return lines
+
+
+def _is_board_content(image_bgr, box, warm_hue=(5, 35), saturation_limit=70):
+    """
+    False when a box is a warm-coloured object rather than chalk on a board.
+
+    The tophat finds thin bright strokes, and a sunlit door frame, a desk edge
+    or a window reveal all qualify: bright, narrow, high local contrast. They
+    differ in colour, not in shape -- chalk is near-grey, so it has very low
+    saturation whatever the board's own tint, while wood and skin are strongly
+    saturated in the orange band. Judging by the bright pixels only keeps the
+    dark board around a stroke from diluting the measurement.
+    """
+    import cv2
+    import numpy as np
+
+    x1, y1, x2, y2 = box
+    crop = image_bgr[max(0, y1):y2, max(0, x1):x2]
+    if crop.size == 0:
+        return True
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    value = hsv[:, :, 2]
+    bright = value >= max(60, int(np.percentile(value, 85)))
+    if bright.sum() < 20:
+        return True
+
+    hue = hsv[:, :, 0][bright]
+    saturation = hsv[:, :, 1][bright]
+    warm = ((hue >= warm_hue[0]) & (hue <= warm_hue[1])).mean()
+    return not (warm > 0.6 and float(np.median(saturation)) > saturation_limit)
+
+
+def split_into_lines(binary, box, min_gap_frac=0.06, min_height_frac=0.012,
+                     min_block_frac=0.2, image_height=None):
+    """
+    Cut a block that holds several written lines into one box per line.
+
+    group_into_lines merges fragments whose vertical ranges overlap, which is
+    right for a level line but wrong for writing that slopes: each line
+    overlaps the next, so three lines collapse into one block. A CRNN
+    transcribes a single line at a time, so a block has to be cut back apart
+    before it can be read.
+
+    The cut is made on the horizontal projection of the ink: rows holding ink
+    form bands, and a run of empty rows between them is a line break. Each
+    band is then tightened to the columns that actually hold ink, so a short
+    line does not inherit the block's full width.
+    """
+    import numpy as np
+
+    x1, y1, x2, y2 = box
+    region = binary[max(0, y1):y2, max(0, x1):x2]
+    if region.size == 0:
+        return [list(box)]
+
+    # A block too short to hold two lines is a word or a single character, and
+    # the blank row inside a '2' or an '=' reads exactly like a line break on
+    # the projection. Leaving short blocks whole is the only way to tell the
+    # two apart without knowing the writing's size.
+    if image_height and (y2 - y1) < image_height * min_block_frac:
+        return [list(box)]
+
+    rows = (region > 0).sum(axis=1)
+    if not rows.any():
+        return [list(box)]
+
+    # The blank run that marks a line break is a fraction of the block, not
+    # of a line: lines sit closer together than a quarter of the block they
+    # form, so a larger threshold never cuts anything.
+    # A row counts as ink when it carries a real share of the busiest row,
+    # which ignores the stray pixels thresholding leaves between lines.
+    ink = rows > max(1, rows.max() * 0.08)
+    height = y2 - y1
+    min_gap = max(3, int(height * min_gap_frac))
+    min_height = max(3, int((image_height or height) * min_height_frac))
+
+    bands, start = [], None
+    gap = 0
+    for index, has_ink in enumerate(ink):
+        if has_ink:
+            if start is None:
+                start = index
+            gap = 0
+        elif start is not None:
+            gap += 1
+            if gap >= min_gap:
+                bands.append((start, index - gap + 1))
+                start, gap = None, 0
+    if start is not None:
+        bands.append((start, len(ink)))
+
+    bands = [(a, b) for a, b in bands if b - a >= min_height]
+    if len(bands) < 2:
+        return [list(box)]
+
+    # A band far shorter than the tallest is a broken-off stroke, not a line
+    # of its own -- splitting it out would undo the fragment merge. Absorb it
+    # into the band it sits closest to.
+    tallest = max(b - a for a, b in bands)
+    lines_only = [(a, b) for a, b in bands if (b - a) >= tallest * 0.4]
+    for a, b in bands:
+        if (b - a) >= tallest * 0.4:
+            continue
+        index = min(range(len(lines_only)),
+                    key=lambda i: min(abs(lines_only[i][0] - b),
+                                      abs(a - lines_only[i][1])))
+        host = lines_only[index]
+        lines_only[index] = (min(host[0], a), max(host[1], b))
+    bands = sorted(lines_only)
+    if len(bands) < 2:
+        return [list(box)]
+
+    lines = []
+    for top, bottom in bands:
+        columns = (region[top:bottom] > 0).sum(axis=0)
+        filled = np.where(columns > 0)[0]
+        if filled.size == 0:
+            continue
+        lines.append([x1 + int(filled[0]), y1 + top,
+                      x1 + int(filled[-1]) + 1, y1 + bottom])
+    return lines or [list(box)]
 
 
 def group_into_lines(boxes, width, height, v_overlap=0.35, h_gap_frac=0.10):
@@ -141,10 +272,58 @@ def group_into_lines(boxes, width, height, v_overlap=0.35, h_gap_frac=0.10):
             grouped.append(current)
         boxes = grouped
 
+    boxes = merge_overlapping(boxes)
     boxes = [b for b in boxes
              if (b[2] - b[0]) > width * 0.05 and (b[3] - b[1]) > height * 0.02]
     # Reading order: rows top-to-bottom, left-to-right within a row.
     boxes.sort(key=lambda b: (round(b[1] / max(height * 0.06, 1)), b[0]))
+    return boxes
+
+def merge_overlapping(boxes, containment=0.6, min_intersection=0.15):
+    """
+    Absorb fragments that overlap a box they belong to.
+
+    group_into_lines joins fragments that sit side by side on a line, but
+    thresholding also splits a single stroke vertically -- the lower curve of
+    a tall letter breaks away and lands partly inside the box for its own
+    line. Those fragments overlap in both axes, which distinct lines of
+    writing almost never do, so an overlap test separates the two cases.
+
+    Merged when either box is mostly contained in the other, or when the
+    intersection is a meaningful share of the smaller box. Repeats until
+    nothing more merges.
+    """
+    boxes = [list(b) for b in boxes]
+    merging = True
+    while merging:
+        merging = False
+        merged, used = [], [False] * len(boxes)
+        for i, box in enumerate(boxes):
+            if used[i]:
+                continue
+            current, used[i] = list(box), True
+            for j in range(i + 1, len(boxes)):
+                if used[j]:
+                    continue
+                other = boxes[j]
+                dx = min(current[2], other[2]) - max(current[0], other[0])
+                dy = min(current[3], other[3]) - max(current[1], other[1])
+                if dx <= 0 or dy <= 0:
+                    continue
+                intersection = dx * dy
+                area_current = (current[2] - current[0]) * (current[3] - current[1])
+                area_other = (other[2] - other[0]) * (other[3] - other[1])
+                smaller = min(area_current, area_other)
+                if smaller <= 0:
+                    continue
+                share = intersection / smaller
+                if share < min_intersection and share < containment:
+                    continue
+                current = [min(current[0], other[0]), min(current[1], other[1]),
+                           max(current[2], other[2]), max(current[3], other[3])]
+                used[j], merging = True, True
+            merged.append(current)
+        boxes = merged
     return boxes
 
 

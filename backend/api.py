@@ -777,6 +777,126 @@ def run_ocr_on_image(image_id: str):
     }
 
 
+# ---------------------------------------------------------------------------
+# Region detection (propose boxes + classify each one)
+# ---------------------------------------------------------------------------
+_region_model = None
+
+
+def _get_region_model():
+    """
+    Load the trained region classifier once, lazily.
+
+    Returns None when no model has been trained yet, so the endpoint can say
+    so instead of failing at import time on a machine that never trains.
+    """
+    global _region_model
+    if _region_model is not None:
+        return _region_model
+
+    model_path = os.environ.get("REGION_MODEL_PATH",
+                               os.path.join(os.path.dirname(os.path.dirname(
+                                   os.path.abspath(__file__))),
+                                   "runs", "region_cnn", "best_model.pt"))
+    if not os.path.isfile(model_path):
+        return None
+
+    try:
+        import torch
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "scripts"))
+        from detect_regions import load_model
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model, classes, image_size = load_model(model_path, device)
+        _region_model = (model, classes, image_size, device)
+        return _region_model
+    except Exception as exc:
+        print(f"  Region model could not be loaded: {exc}")
+        return None
+
+
+@app.post("/api/dataset/images/{image_id}/detect")
+def detect_regions_endpoint(image_id: str, persist: bool = Query(False)):
+    """
+    Detect content regions in a stored dataset image.
+
+    Boxes come from the classical proposer and the class from the trained
+    region classifier. With persist=true the regions replace the image's
+    annotations, so the boxes show up everywhere the dataset is read.
+    """
+    record = db.get_dataset_image_by_id(image_id) or \
+        db.get_dataset_image_by_internal_id(image_id)
+    if not record:
+        raise HTTPException(404, "Dataset image not found")
+
+    loaded = _get_region_model()
+    if loaded is None:
+        raise HTTPException(
+            503, "No region model available. Train one with "
+                 "scripts/train_region_cnn.py, or set REGION_MODEL_PATH.")
+
+    image_bytes = storage.get_image(record.get("image_path", ""))
+    if not image_bytes:
+        raise HTTPException(404, "Image bytes not found in storage")
+
+    import cv2
+    import numpy as np
+    from detect_regions import detect as run_detection
+
+    image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(500, "Could not decode the stored image")
+
+    model, classes, image_size, device = loaded
+    regions = run_detection(image, model, classes, image_size, device)
+    height, width = image.shape[:2]
+
+    if persist and regions:
+        # reviewed stays false: these are model predictions, not verified labels.
+        db.insert_annotations(record["image_id"], [
+            {"class": r["class"], "text": "", "bbox": r["bbox_pixel"],
+             "confidence": r["confidence"]}
+            for r in regions], mark_reviewed=False)
+
+    return {"image_id": record["image_id"], "width": width, "height": height,
+            "classes": classes, "regions": regions, "persisted": bool(persist)}
+
+
+@app.post("/api/detect/upload")
+async def detect_regions_upload(image: UploadFile = File(...)):
+    """
+    Detect regions in an image sent straight from the browser.
+
+    Nothing is stored: this is the "try the model on a new photo" path, so a
+    board that is not part of the dataset can be run through the pipeline
+    without first being ingested.
+    """
+    loaded = _get_region_model()
+    if loaded is None:
+        raise HTTPException(
+            503, "No region model available. Train one with "
+                 "scripts/train_region_cnn.py, or set REGION_MODEL_PATH.")
+
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(400, "Empty upload")
+
+    import cv2
+    import numpy as np
+    from detect_regions import detect as run_detection
+
+    decoded = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if decoded is None:
+        raise HTTPException(400, "Could not decode the uploaded image")
+
+    model, classes, image_size, device = loaded
+    regions = run_detection(decoded, model, classes, image_size, device)
+    height, width = decoded.shape[:2]
+    return {"filename": image.filename, "width": width, "height": height,
+            "classes": classes, "regions": regions}
+
+
 @app.put("/api/dataset/images/{image_id}/annotation")
 def update_image_annotation(image_id: str, req: AnnotationUpdateRequest):
     """Update and verify human annotations for a dataset image."""
