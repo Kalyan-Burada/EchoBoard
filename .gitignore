@@ -12,3 +12,11 @@ dataset/
 minio-server/
 dashboard/.env.local
 dashboard/.env
+
+# Model weights & generated datasets
+*.pt
+*.pth
+checkpoints/
+dataset_cache/
+synthetic_samples/
+synthetic_samples_v2/

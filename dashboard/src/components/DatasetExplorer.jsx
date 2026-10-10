@@ -56,10 +56,11 @@ export default function DatasetExplorer({ refreshKey }) {
     try {
       const res = await api.runOcr(selectedImage.id || selectedImage.image_id);
       setAnnText(res.ocr_text || "");
-      setAnnMsg("✨ OCR extracted text! Please verify below.");
+      if (res.class) setAnnClass(res.class);
+      setAnnMsg(`✨ CRNN recognized text & CNN classified as "${res.class || 'Text'}" (${res.source || 'AI'})`);
       loadImages();
     } catch {
-      setAnnMsg("❌ OCR extraction failed.");
+      setAnnMsg("❌ AI extraction failed.");
     }
     setOcrLoading(false);
   }
@@ -92,8 +93,8 @@ export default function DatasetExplorer({ refreshKey }) {
     if (selectedImage?.image_id === imageId) setSelectedImage(null);
   }
 
-  const subjects = [...new Set(images.map(i => i.subject))];
-  const writers = [...new Set(images.map(i => i.writer_id))];
+  const subjects = [...new Set(images.map(i => i.subject).filter(Boolean))];
+  const writers = [...new Set(images.map(i => i.writer_id).filter(Boolean))];
 
   const selectClass = "px-3 py-2 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-[var(--color-text-primary)] text-xs focus:border-[var(--color-accent)] focus:outline-none transition-colors appearance-none cursor-pointer";
 
@@ -113,7 +114,7 @@ export default function DatasetExplorer({ refreshKey }) {
             <span className="text-xs text-[var(--color-text-muted)] font-semibold flex items-center gap-1"><Search size={13} /> Filter:</span>
             <select value={filterSubject} onChange={e => setFilterSubject(e.target.value)} className={selectClass}>
               <option value="">All Subjects</option>
-              {subjects.map(s => <option key={s} value={s}>{s}</option>)}
+              {subjects.map((s, idx) => <option key={`sub-${s}-${idx}`} value={s}>{s}</option>)}
             </select>
             <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className={selectClass}>
               <option value="">All Status</option>
@@ -122,11 +123,11 @@ export default function DatasetExplorer({ refreshKey }) {
             </select>
             <select value={filterVersion} onChange={e => setFilterVersion(e.target.value)} className={selectClass}>
               <option value="">All Versions</option>
-              {versions.map(v => <option key={v.version} value={v.version}>{v.version}</option>)}
+              {versions.map((v, idx) => <option key={`ver-${v.version || idx}`} value={v.version}>{v.version}</option>)}
             </select>
             <select value={filterWriter} onChange={e => setFilterWriter(e.target.value)} className={selectClass}>
               <option value="">All Writers</option>
-              {writers.map(w => <option key={w} value={w}>{w}</option>)}
+              {writers.map((w, idx) => <option key={`wri-${w}-${idx}`} value={w}>{w}</option>)}
             </select>
           </div>
           <button onClick={loadImages} className="p-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] text-[var(--color-text-secondary)] hover:text-[var(--color-accent)] cursor-pointer transition-colors">

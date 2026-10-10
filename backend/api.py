@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import database as db
 import storage
 from video_processor import process_video
+import ml_service
 
 
 def _image_dimensions(image_bytes: bytes):
@@ -753,25 +754,33 @@ def _run_ocr_on_bytes(image_bytes: bytes) -> str:
 
 @app.post("/api/dataset/images/{image_id}/ocr")
 def run_ocr_on_image(image_id: str):
-    """Run OCR auto-annotation on a dataset image."""
+    """Run OCR auto-annotation & CNN classification on a dataset image using trained models."""
     record = db.get_dataset_image_by_internal_id(image_id) or db.get_dataset_image_by_id(image_id)
     if not record:
         raise HTTPException(404, "Dataset image not found")
 
     image_bytes = storage.get_image(record.get("image_path", ""))
-    extracted_text = _run_ocr_on_bytes(image_bytes)
+    ml_result = ml_service.process_image_with_ml(image_bytes)
+
+    extracted_text = ml_result.get("text", "")
+    detected_class = ml_result.get("class", "Text")
+    confidence = ml_result.get("confidence", 1.0)
+    source = ml_result.get("source", "CRNN")
 
     target_id = record.get("image_id", image_id)
     db.update_dataset_image_annotation(
         image_id=target_id,
         annotation_text=extracted_text,
-        annotation_class="Text",
+        annotation_class=detected_class,
         reviewed=False,
     )
 
     return {
         "image_id": target_id,
         "ocr_text": extracted_text,
+        "class": detected_class,
+        "confidence": confidence,
+        "source": source,
         "status": "ocr_completed",
         "reviewed": False,
     }

@@ -62,7 +62,10 @@ class StorageConfigError(RuntimeError):
 
 def _bucket():
     """Return the Supabase Storage bucket proxy for this project."""
-    import database as db
+    try:
+        import database as db
+    except ImportError:
+        from backend import database as db
 
     try:
         client = db.get_client()
@@ -94,7 +97,10 @@ def init_storage():
         print("  NOTE: images are NOT shared with collaborators in this mode.")
         return
 
-    import database as db
+    try:
+        import database as db
+    except ImportError:
+        from backend import database as db
 
     try:
         client = db.get_client()
