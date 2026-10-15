@@ -16,7 +16,6 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, os.path.join(REPO_ROOT, "ml"))
 
-from export_dataset import export_echd_dataset
 from crnn_model import CRNN
 from dataset_loader import TextVocabulary, ECHDDataset, crnn_collate_fn
 
@@ -63,16 +62,21 @@ def init_weights(m):
             nn.init.zeros_(m.bias)
 
 
-def train():
+def train(epochs=25, batch_size=32, lr=1e-3):
     print("=" * 65)
     print("    ECHD Handwriting Recognition Model Training (CRNN)")
+    print(f"    Epochs: {epochs} | Batch Size: {batch_size} | Learning Rate: {lr}")
     print("=" * 65)
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
     if not os.path.exists(MANIFEST_PATH):
-        print("Dataset cache not found. Downloading from Supabase...")
-        samples = export_echd_dataset()
+        print("Dataset cache not found. Attempting export...")
+        try:
+            from export_dataset import export_echd_dataset
+            samples = export_echd_dataset()
+        except Exception as e:
+            raise RuntimeError(f"Manifest not found at {MANIFEST_PATH}. Please generate dataset first using: python ml/generate_general_dataset.py ({e})")
     else:
         with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
             samples = json.load(f)
@@ -96,11 +100,9 @@ def train():
 
     print(f"Split: {len(train_samples)} training samples, {len(val_samples)} validation samples")
 
-    # DataLoader with batch_size = 8
     train_dataset = ECHDDataset(train_samples, DATASET_DIR, vocab, is_train=True, target_height=32, target_width=384)
     val_dataset = ECHDDataset(val_samples, DATASET_DIR, vocab, is_train=False, target_height=32, target_width=384)
 
-    batch_size = 32
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
         collate_fn=crnn_collate_fn, num_workers=0
@@ -111,7 +113,12 @@ def train():
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on device: {device}")
+    if device.type == "cpu":
+        threads = min(16, os.cpu_count() or 8)
+        torch.set_num_threads(threads)
+        print(f"Training on device: {device} (optimized with {threads} threads)")
+    else:
+        print(f"Training on device: {device}")
 
     model = CRNN(img_channels=1, num_classes=len(vocab), hidden_size=256, rnn_layers=2)
     model.apply(init_weights)
@@ -121,9 +128,8 @@ def train():
     print(f"CRNN Model Parameters: {total_params:,}")
 
     criterion = nn.CTCLoss(blank=0, zero_infinity=True)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.999), eps=1e-8)
-    epochs = 30
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=8, min_lr=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, betas=(0.9, 0.999), eps=1e-8)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-5)
 
     best_val_loss = float("inf")
     best_cer = float("inf")
@@ -243,4 +249,10 @@ def train():
 
 
 if __name__ == "__main__":
-    train()
+    import argparse
+    parser = argparse.ArgumentParser(description="Train CRNN on board handwriting dataset")
+    parser.add_argument("--epochs", type=int, default=25, help="Number of training epochs (default: 25)")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size (default: 32)")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate (default: 1e-3)")
+    cli_args = parser.parse_args()
+    train(epochs=cli_args.epochs, batch_size=cli_args.batch_size, lr=cli_args.lr)

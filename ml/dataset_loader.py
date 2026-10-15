@@ -107,8 +107,9 @@ def preprocess_image(img_path, target_height=32, target_width=256, is_train=Fals
         resized = cv2.resize(img, (target_width, target_height), interpolation=cv2.INTER_AREA)
     else:
         resized = cv2.resize(img, (new_w, target_height), interpolation=cv2.INTER_LINEAR)
-        # Pad right side to target_width
-        padded = np.zeros((target_height, target_width), dtype=np.uint8)
+        # Pad right side to target_width using border background color to prevent boundary artifacts
+        bg_val = int(np.median(resized[:, -max(1, min(5, new_w)):]))
+        padded = np.full((target_height, target_width), bg_val, dtype=np.uint8)
         padded[:, :new_w] = resized
         resized = padded
 

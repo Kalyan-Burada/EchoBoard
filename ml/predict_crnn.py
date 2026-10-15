@@ -7,6 +7,7 @@ import os
 import sys
 import torch
 import cv2
+import numpy as np
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
@@ -55,50 +56,81 @@ class CRNNRecognizer:
 
         print(f"Loaded trained CRNN model from {checkpoint_path} ({len(self.vocab)} classes, device: {self.device})")
 
+    def _predict_single_line(self, gray):
+        h, w = gray.shape[:2]
+        if h == 0 or w == 0:
+            return ""
+        scale = self.target_height / float(h)
+        new_w = max(1, int(w * scale))
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+
+        if new_w > self.target_width:
+            resized = cv2.resize(gray, (self.target_width, self.target_height), interpolation=cv2.INTER_AREA)
+        else:
+            resized = cv2.resize(gray, (new_w, self.target_height), interpolation=cv2.INTER_LINEAR)
+            bg_val = int(np.median(resized[:, -max(1, min(5, new_w)):]))
+            padded = np.full((self.target_height, self.target_width), bg_val, dtype=np.uint8)
+            padded[:, :new_w] = resized
+            resized = padded
+
+        tensor = (resized.astype(np.float32) / 127.5) - 1.0
+        tensor = np.expand_dims(tensor, axis=0)
+        img_tensor = torch.from_numpy(tensor).float().unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            log_probs = self.model(img_tensor)  # (T, 1, C)
+            preds = log_probs.permute(1, 0, 2).argmax(dim=-1)[0].cpu().numpy()
+            text = self.vocab.decode(preds)
+        return text.strip()
+
     def predict(self, image_input):
         """
         Recognize text from an image path or numpy array.
         """
         if isinstance(image_input, str):
-            img_tensor = preprocess_image(
-                image_input,
-                target_height=self.target_height,
-                target_width=self.target_width,
-                is_train=False,
-            )
+            img_bgr = cv2.imread(image_input)
+            if img_bgr is None:
+                return ""
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         else:
-            # Assume numpy array
-            h, w = image_input.shape[:2]
-            scale = self.target_height / float(h)
-            new_w = max(1, int(w * scale))
             if len(image_input.shape) == 3:
                 gray = cv2.cvtColor(image_input, cv2.COLOR_BGR2GRAY)
             else:
                 gray = image_input
 
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            gray = clahe.apply(gray)
+        h, w = gray.shape[:2]
+        if h < 10 or w < 10:
+            return ""
 
-            if new_w > self.target_width:
-                resized = cv2.resize(gray, (self.target_width, self.target_height), interpolation=cv2.INTER_AREA)
-            else:
-                resized = cv2.resize(gray, (new_w, self.target_height), interpolation=cv2.INTER_LINEAR)
-                padded = np.zeros((self.target_height, self.target_width), dtype=np.uint8)
-                padded[:, :new_w] = resized
-                resized = padded
+        # Multi-line check for tall crops
+        if h >= 65 and (h / float(w) > 0.35):
+            grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+            profile = np.sum(np.abs(grad_y), axis=1)
+            profile = cv2.GaussianBlur(profile.reshape(-1, 1), (1, 15), 3).flatten()
 
-            tensor = (resized.astype(np.float32) / 127.5) - 1.0
-            tensor = np.expand_dims(tensor, axis=0)
-            img_tensor = torch.from_numpy(tensor).float()
+            valleys = []
+            min_lh = 24
+            mean_p = float(np.mean(profile))
+            for y in range(min_lh, h - min_lh):
+                if profile[y] < mean_p * 0.45 and profile[y] == min(profile[max(0, y - 8):min(h, y + 8)]):
+                    if not valleys or (y - valleys[-1] >= min_lh):
+                        valleys.append(y)
 
-        img_tensor = img_tensor.unsqueeze(0).to(self.device)
+            if valleys:
+                cuts = [0] + valleys + [h]
+                line_texts = []
+                for i in range(len(cuts) - 1):
+                    strip = gray[cuts[i]:cuts[i + 1], :]
+                    if strip.shape[0] >= 12:
+                        t = self._predict_single_line(strip)
+                        if t:
+                            line_texts.append(t)
+                if line_texts:
+                    return "\n".join(line_texts)
 
-        with torch.no_grad():
-            log_probs = self.model(img_tensor)  # (T, 1, C)
-            preds = log_probs.permute(1, 0, 2).argmax(dim=-1)[0].cpu().numpy()
-            recognized_text = self.vocab.decode(preds)
-
-        return recognized_text
+        return self._predict_single_line(gray)
 
 
 if __name__ == "__main__":
