@@ -8,6 +8,7 @@ import ApplicationsSection from "./components/ApplicationsSection";
 import StatsBar from "./components/StatsBar";
 import UploadPanel from "./components/UploadPanel";
 import DatasetExplorer from "./components/DatasetExplorer";
+import DetectPanel from "./components/DetectPanel";
 import DocsSection from "./components/DocsSection";
 import TeamSection from "./components/TeamSection";
 import Footer from "./components/Footer";
@@ -69,6 +70,7 @@ export default function App() {
         {/* Functional Sections */}
         <UploadPanel onDone={onUploadDone} />
 
+        <DetectPanel />
         <DatasetExplorer refreshKey={refreshKey} />
         <DocsSection />
         <TeamSection />

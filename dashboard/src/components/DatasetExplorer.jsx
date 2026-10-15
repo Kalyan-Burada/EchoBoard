@@ -5,6 +5,13 @@ import { api } from "../api";
 
 const CLASSES = ["Text", "Equation", "Heading", "Diagram", "Table", "Other"];
 
+// One colour per region class, shared by the overlay and its legend.
+const CLASS_COLORS = {
+  Text: "#6B6BFF", Heading: "#4ECDC4", Formula: "#FFD93D",
+  Equation: "#6BCB77", Diagram: "#FF6CA6", Table: "#FF9F45",
+};
+const colorFor = (c) => CLASS_COLORS[c] || "#9CA3AF";
+
 export default function DatasetExplorer({ refreshKey }) {
   const [images, setImages] = useState([]);
   const [versions, setVersions] = useState([]);
@@ -17,6 +24,11 @@ export default function DatasetExplorer({ refreshKey }) {
   const [newVersionDesc, setNewVersionDesc] = useState("");
   const [versionMsg, setVersionMsg] = useState(null);
   const [visibleCount, setVisibleCount] = useState(12);
+
+  // Region detection states
+  const [regions, setRegions] = useState(null);
+  const [detectLoading, setDetectLoading] = useState(false);
+  const [detectMsg, setDetectMsg] = useState(null);
 
   // OCR & Annotation Verification states
   const [ocrLoading, setOcrLoading] = useState(false);
@@ -46,8 +58,28 @@ export default function DatasetExplorer({ refreshKey }) {
       setAnnText(existingText);
       setAnnClass(existingClass);
       setAnnMsg(null);
+      // Boxes belong to the image that produced them.
+      setRegions(null);
+      setDetectMsg(null);
     }
   }, [selectedImage]);
+
+  async function handleDetectRegions() {
+    if (!selectedImage) return;
+    setDetectLoading(true);
+    setDetectMsg(null);
+    try {
+      const res = await api.detectRegions(selectedImage.id || selectedImage.image_id);
+      setRegions(res);
+      setDetectMsg(res.regions.length
+        ? `Found ${res.regions.length} region${res.regions.length === 1 ? "" : "s"}`
+        : "No regions found in this image");
+    } catch (e) {
+      setDetectMsg(e.message || "Detection failed");
+    } finally {
+      setDetectLoading(false);
+    }
+  }
 
   async function handleRunOcr() {
     if (!selectedImage) return;
@@ -185,7 +217,57 @@ export default function DatasetExplorer({ refreshKey }) {
                     <X size={16} />
                   </button>
                 </div>
-                <img src={api.imageUrl(selectedImage.id)} alt={selectedImage.image_id} className="w-full rounded-lg border border-[var(--color-border)]" />
+                <div className="relative w-full">
+                  <img src={api.imageUrl(selectedImage.id)} alt={selectedImage.image_id} className="w-full rounded-lg border border-[var(--color-border)]" />
+                  {regions?.regions?.map((r, i) => {
+                    // bbox_norm is [x_center, y_center, width, height], normalised,
+                    // so convert to a top-left percentage box for CSS.
+                    const [cx, cy, bw, bh] = r.bbox_norm;
+                    const style = {
+                      left: `${(cx - bw / 2) * 100}%`,
+                      top: `${(cy - bh / 2) * 100}%`,
+                      width: `${bw * 100}%`,
+                      height: `${bh * 100}%`,
+                      borderColor: colorFor(r.class),
+                    };
+                    return (
+                      <div key={i} className="absolute border-2 rounded-sm pointer-events-none" style={style}>
+                        <span
+                          className="absolute -top-5 left-0 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono whitespace-nowrap"
+                          style={{ backgroundColor: colorFor(r.class), color: "#111" }}
+                        >
+                          {r.class} {(r.confidence * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={handleDetectRegions}
+                  disabled={detectLoading}
+                  className="mt-3 w-full py-2 rounded-lg text-xs font-semibold border border-[var(--color-accent-cyan)]/25 bg-[var(--color-accent-cyan)]/10 text-[var(--color-accent-cyan)] hover:bg-[var(--color-accent-cyan)]/20 cursor-pointer transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                >
+                  <Sparkles size={13} />
+                  {detectLoading ? "Detecting regions…" : "Detect Regions (CNN)"}
+                </button>
+
+                {detectMsg && (
+                  <p className="mt-2 text-[11px] text-[var(--color-text-muted)]">{detectMsg}</p>
+                )}
+
+                {regions?.regions?.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {regions.regions.map((r, i) => (
+                      <div key={i} className="flex items-center gap-2 text-[11px] font-mono">
+                        <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colorFor(r.class) }} />
+                        <span className="text-[var(--color-text-primary)]">{i + 1}. {r.class}</span>
+                        <span className="text-[var(--color-text-muted)]">{(r.confidence * 100).toFixed(0)}%</span>
+                        <span className="text-[var(--color-text-muted)] ml-auto">[{r.bbox_pixel.join(", ")}]</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {/* OCR & Human Verification Box */}
                 <div className="p-3.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] space-y-3">

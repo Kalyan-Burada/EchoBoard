@@ -201,11 +201,47 @@ dashboard/
 scripts/
   run_backend.bat            Windows convenience launcher
   ingest_folder.py           Bulk-ingest a folder of images, with labels
+  train_quality_cnn.py       Train the capture-quality / barrier CNN
   sync_local_to_bucket.py    Migrate local images into the shared bucket
   fix_stuck_videos.py        Clear videos left with processing=True
 docs/
   SHARED_SETUP.md      Multi-collaborator setup guide
 ```
+
+---
+
+## Training the capture-quality CNN
+
+`scripts/train_quality_cnn.py` trains a multi-label CNN that predicts the
+three capture barriers recorded in the dataset — `occluded`, `blurry` and
+`poor_lighting` — from a whole board image. It is the pipeline's quality
+gate: a score per capture, so unusable frames can be flagged before they
+reach the annotation queue and excluded from a training split.
+
+```bash
+pip install -r requirements-train.txt
+
+# from Supabase (downloads images into a local cache once)
+python scripts/train_quality_cnn.py --epochs 30
+
+# or straight from the ingest folders, no network needed
+python scripts/train_quality_cnn.py --source local \
+    --folders boards boards_2 boards_3 boards_4
+```
+
+Labels are derived from stored metadata rather than created for training:
+`occluded` is the annotator's flag, `blurry` is `blur_score` below
+`--blur-threshold` (measured as the variance of the Laplacian), and
+`poor_lighting` is `lighting_score` below `--light-threshold`.
+
+Because the dataset deliberately holds several captures of the same board
+under different conditions, images are grouped by their transcription and
+split with `GroupShuffleSplit`, so no board content appears in both train
+and test. A random split would leak and report inflated accuracy.
+
+Outputs land in `runs/quality_cnn/`: `best_model.pt`, `metrics.json` with
+per-label precision/recall/F1 on the held-out split, `predictions.csv`, and
+`history.png`.
 
 ---
 
