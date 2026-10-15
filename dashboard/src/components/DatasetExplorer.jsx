@@ -249,7 +249,7 @@ export default function DatasetExplorer({ refreshKey }) {
                   className="mt-3 w-full py-2 rounded-lg text-xs font-semibold border border-[var(--color-accent-cyan)]/25 bg-[var(--color-accent-cyan)]/10 text-[var(--color-accent-cyan)] hover:bg-[var(--color-accent-cyan)]/20 cursor-pointer transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
                 >
                   <Sparkles size={13} />
-                  {detectLoading ? "Detecting regions…" : "Detect Regions (CNN)"}
+                  {detectLoading ? "Analyzing regions (CNN + RNN)…" : "Detect & Transcribe Regions (CNN + RNN)"}
                 </button>
 
                 {detectMsg && (
@@ -257,13 +257,20 @@ export default function DatasetExplorer({ refreshKey }) {
                 )}
 
                 {regions?.regions?.length > 0 && (
-                  <div className="mt-2 space-y-1">
+                  <div className="mt-2 space-y-1.5">
                     {regions.regions.map((r, i) => (
-                      <div key={i} className="flex items-center gap-2 text-[11px] font-mono">
-                        <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colorFor(r.class) }} />
-                        <span className="text-[var(--color-text-primary)]">{i + 1}. {r.class}</span>
-                        <span className="text-[var(--color-text-muted)]">{(r.confidence * 100).toFixed(0)}%</span>
-                        <span className="text-[var(--color-text-muted)] ml-auto">[{r.bbox_pixel.join(", ")}]</span>
+                      <div key={i} className="p-2 rounded bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[11px] font-mono">
+                        <div className="flex items-center gap-2">
+                          <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colorFor(r.class) }} />
+                          <span className="text-[var(--color-text-primary)] font-semibold">{i + 1}. {r.class}</span>
+                          <span className="text-[var(--color-text-muted)]">{(r.confidence * 100).toFixed(0)}% (CNN)</span>
+                          <span className="text-[var(--color-text-muted)] ml-auto">[{r.bbox_pixel.join(", ")}]</span>
+                        </div>
+                        {r.text && (
+                          <div className="mt-1 text-xs font-sans text-[var(--color-accent-cyan)] bg-[var(--color-bg-primary)] px-2 py-1 rounded border border-[var(--color-border)]">
+                            📝 "{r.text}"
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

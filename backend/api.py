@@ -803,36 +803,77 @@ def _get_region_model():
     if _region_model is not None:
         return _region_model
 
-    model_path = os.environ.get("REGION_MODEL_PATH",
-                               os.path.join(os.path.dirname(os.path.dirname(
-                                   os.path.abspath(__file__))),
-                                   "runs", "region_cnn", "best_model.pt"))
-    if not os.path.isfile(model_path):
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.environ.get("REGION_MODEL_PATH"),
+        os.path.join(project_root, "runs", "region_cnn", "best_model.pt"),
+        os.path.join(project_root, "ml", "best_model.pt"),
+        os.path.join(project_root, "best_model.pt"),
+        os.path.join(os.path.dirname(project_root), "best_model.pt"),
+    ]
+    model_path = next((p for p in candidates if p and os.path.isfile(p)), None)
+    if not model_path:
         return None
 
     try:
         import torch
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "scripts"))
+        sys.path.insert(0, os.path.join(project_root, "scripts"))
         from detect_regions import load_model
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model, classes, image_size = load_model(model_path, device)
         _region_model = (model, classes, image_size, device)
+        print(f"[API] Loaded Region CNN model from {model_path} ({classes})")
         return _region_model
     except Exception as exc:
         print(f"  Region model could not be loaded: {exc}")
         return None
 
 
+def _enrich_regions_with_crnn(image_bgr, regions):
+    """
+    Run the CRNN (RNN text recognition model) on each proposed bounding box
+    so regions contain both the CNN classification and the transcribed text.
+    """
+    if not regions or image_bgr is None:
+        return regions
+
+    crnn = ml_service.get_crnn_recognizer()
+    h, w = image_bgr.shape[:2]
+
+    for r in regions:
+        bbox = r.get("bbox_pixel")
+        if not bbox or len(bbox) != 4:
+            r["text"] = ""
+            continue
+        x1, y1, x2, y2 = bbox
+        crop = image_bgr[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+        text = ""
+        if crop.size > 0 and crnn and crnn.available:
+            text = crnn.predict(crop)
+        # If CRNN produced empty string and it's written content, fallback to RapidOCR
+        if not text and crop.size > 0:
+            try:
+                from rapidocr_onnxruntime import RapidOCR
+                ocr_engine = RapidOCR()
+                res, _ = ocr_engine(crop)
+                if res:
+                    lines = [str(line[1]).strip() for line in res if len(line) >= 2 and line[1]]
+                    text = " ".join(lines)
+            except Exception:
+                pass
+        r["text"] = text.strip() if text else ""
+    return regions
+
+
 @app.post("/api/dataset/images/{image_id}/detect")
 def detect_regions_endpoint(image_id: str, persist: bool = Query(False)):
     """
-    Detect content regions in a stored dataset image.
+    Detect content regions in a stored dataset image using both CNN + CRNN models.
 
-    Boxes come from the classical proposer and the class from the trained
-    region classifier. With persist=true the regions replace the image's
-    annotations, so the boxes show up everywhere the dataset is read.
+    Boxes come from the classical proposer, the class from the trained
+    region classifier (CNN), and the transcription from the CRNN (RNN).
+    With persist=true the regions replace the image's annotations.
     """
     record = db.get_dataset_image_by_id(image_id) or \
         db.get_dataset_image_by_internal_id(image_id)
@@ -859,12 +900,13 @@ def detect_regions_endpoint(image_id: str, persist: bool = Query(False)):
 
     model, classes, image_size, device = loaded
     regions = run_detection(image, model, classes, image_size, device)
+    regions = _enrich_regions_with_crnn(image, regions)
     height, width = image.shape[:2]
 
     if persist and regions:
         # reviewed stays false: these are model predictions, not verified labels.
         db.insert_annotations(record["image_id"], [
-            {"class": r["class"], "text": "", "bbox": r["bbox_pixel"],
+            {"class": r["class"], "text": r.get("text", ""), "bbox": r["bbox_pixel"],
              "confidence": r["confidence"]}
             for r in regions], mark_reviewed=False)
 
@@ -875,7 +917,7 @@ def detect_regions_endpoint(image_id: str, persist: bool = Query(False)):
 @app.post("/api/detect/upload")
 async def detect_regions_upload(image: UploadFile = File(...)):
     """
-    Detect regions in an image sent straight from the browser.
+    Detect regions in an image sent straight from the browser using both CNN + CRNN.
 
     Nothing is stored: this is the "try the model on a new photo" path, so a
     board that is not part of the dataset can be run through the pipeline
@@ -901,6 +943,7 @@ async def detect_regions_upload(image: UploadFile = File(...)):
 
     model, classes, image_size, device = loaded
     regions = run_detection(decoded, model, classes, image_size, device)
+    regions = _enrich_regions_with_crnn(decoded, regions)
     height, width = decoded.shape[:2]
     return {"filename": image.filename, "width": width, "height": height,
             "classes": classes, "regions": regions}

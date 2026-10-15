@@ -55,10 +55,10 @@ export default function DetectPanel() {
 
   return (
     <section id="detect" className="py-16 px-4 sm:px-6 lg:px-8 max-w-6xl mx-auto">
-      <h2 className="text-3xl font-bold mb-2">Try the model</h2>
+      <h2 className="text-3xl font-bold mb-2">Try the models (CNN + RNN)</h2>
       <p className="text-[var(--color-text-secondary)] mb-8">
-        Upload a board photo. The proposer finds the written regions and the CNN
-        classifies each one. Nothing is saved to the dataset.
+        Upload a board photo. The proposer localizes regions, the CNN classifies each one (Equation/Text),
+        and the CRNN (Bi-LSTM RNN) transcribes the handwritten content. Nothing is saved to the dataset.
       </p>
 
       <div
@@ -87,11 +87,11 @@ export default function DetectPanel() {
           <button
             onClick={run}
             disabled={loading}
-            className="px-5 py-2.5 rounded-lg bg-[var(--color-accent)] text-white font-medium disabled:opacity-50"
+            className="px-5 py-2.5 rounded-lg bg-[var(--color-accent)] text-white font-medium disabled:opacity-50 cursor-pointer"
           >
-            {loading ? "Detecting…" : "Detect Regions (CNN)"}
+            {loading ? "Analyzing (CNN + RNN)…" : "Detect & Transcribe (CNN + RNN)"}
           </button>
-          <button onClick={reset} className="px-5 py-2.5 rounded-lg border border-[var(--color-border)]">
+          <button onClick={reset} className="px-5 py-2.5 rounded-lg border border-[var(--color-border)] hover:bg-[var(--color-surface)] cursor-pointer">
             Clear
           </button>
         </div>
@@ -138,10 +138,10 @@ export default function DetectPanel() {
           {result && (
             <div className="rounded-lg border border-[var(--color-border)] p-4">
               <p className="font-semibold mb-1">
-                {result.regions.length} region{result.regions.length === 1 ? "" : "s"}
+                {result.regions.length} region{result.regions.length === 1 ? "" : "s"} detected
               </p>
               <p className="text-xs text-[var(--color-text-secondary)] mb-4">
-                {result.width}×{result.height} · classes: {result.classes.join(", ")}
+                {result.width}×{result.height} · Models: CNN (Classifier) + CRNN (RNN Text Recognizer)
               </p>
 
               {result.regions.length === 0 && (
@@ -150,28 +150,36 @@ export default function DetectPanel() {
                 </p>
               )}
 
-              <ul className="space-y-2">
+              <ul className="space-y-3">
                 {result.regions.map((r, i) => (
                   <li
                     key={i}
                     onMouseEnter={() => setHovered(i)}
                     onMouseLeave={() => setHovered(null)}
-                    className="text-sm flex items-start gap-2 cursor-default"
+                    className="text-sm flex flex-col gap-1 p-2 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] cursor-default"
                   >
-                    <span
-                      className="mt-1 w-3 h-3 rounded-sm shrink-0"
-                      style={{ backgroundColor: colorFor(r.class) }}
-                    />
-                    <span>
-                      <strong>{i + 1}. {r.class}</strong>{" "}
-                      <span className="text-[var(--color-text-secondary)]">
-                        {(r.confidence * 100).toFixed(0)}% · → {r.route}
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="w-3 h-3 rounded-sm shrink-0"
+                        style={{ backgroundColor: colorFor(r.class) }}
+                      />
+                      <strong className="text-[var(--color-text-primary)]">{i + 1}. {r.class}</strong>{" "}
+                      <span className="text-[var(--color-text-secondary)] text-xs">
+                        {(r.confidence * 100).toFixed(0)}% (CNN)
                       </span>
-                      <br />
-                      <code className="text-xs text-[var(--color-text-secondary)]">
+                      <code className="text-[11px] text-[var(--color-text-muted)] ml-auto font-mono">
                         [{r.bbox_pixel.join(", ")}]
                       </code>
-                    </span>
+                    </div>
+                    {r.text ? (
+                      <div className="mt-1 px-2.5 py-1.5 rounded bg-[var(--color-bg-primary)] border border-[var(--color-border)] text-xs text-[var(--color-accent-cyan)] font-mono">
+                        📝 "{r.text}"
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-[var(--color-text-muted)] italic pl-5">
+                        (No text recognized by CRNN)
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
