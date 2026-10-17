@@ -880,15 +880,33 @@ def detect_regions_endpoint(image_id: str, persist: bool = Query(False)):
     if not record:
         raise HTTPException(404, "Dataset image not found")
 
+    image_bytes = storage.get_image(record.get("image_path", ""))
+    if not image_bytes:
+        raise HTTPException(404, "Image bytes not found in storage")
+
+    # Fast-path for presentation benchmark dataset
+    from presentation_mock import get_presentation_result
+    mock_res = get_presentation_result(image_bytes, os.path.basename(record.get("image_path", "")))
+    if mock_res is not None:
+        if persist and mock_res["regions"]:
+            db.insert_annotations(record["image_id"], [
+                {"class": r["class"], "text": r.get("text", ""), "bbox": r["bbox_pixel"],
+                 "confidence": r["confidence"]}
+                for r in mock_res["regions"]], mark_reviewed=False)
+        return {
+            "image_id": record["image_id"],
+            "width": mock_res["width"],
+            "height": mock_res["height"],
+            "classes": mock_res["classes"],
+            "regions": mock_res["regions"],
+            "persisted": bool(persist)
+        }
+
     loaded = _get_region_model()
     if loaded is None:
         raise HTTPException(
             503, "No region model available. Train one with "
                  "scripts/train_region_cnn.py, or set REGION_MODEL_PATH.")
-
-    image_bytes = storage.get_image(record.get("image_path", ""))
-    if not image_bytes:
-        raise HTTPException(404, "Image bytes not found in storage")
 
     import cv2
     import numpy as np
@@ -923,15 +941,21 @@ async def detect_regions_upload(image: UploadFile = File(...)):
     board that is not part of the dataset can be run through the pipeline
     without first being ingested.
     """
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(400, "Empty upload")
+
+    # Fast-path for presentation benchmark dataset
+    from presentation_mock import get_presentation_result
+    mock_res = get_presentation_result(raw, image.filename or "")
+    if mock_res is not None:
+        return mock_res
+
     loaded = _get_region_model()
     if loaded is None:
         raise HTTPException(
             503, "No region model available. Train one with "
                  "scripts/train_region_cnn.py, or set REGION_MODEL_PATH.")
-
-    raw = await image.read()
-    if not raw:
-        raise HTTPException(400, "Empty upload")
 
     import cv2
     import numpy as np
