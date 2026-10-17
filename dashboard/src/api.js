@@ -1,34 +1,40 @@
 // Base URL of the EchoBoard backend API. Override per-machine via
-// VITE_API_BASE in dashboard/.env.local (see dashboard/.env.example).
-const BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000";
+// VITE_API_BASE in dashboard/.env.local or window localStorage.
+export const getBaseUrl = () => {
+  if (typeof window !== "undefined") {
+    const override = localStorage.getItem("echoboard_api_base");
+    if (override && override.trim()) return override.trim().replace(/\/+$/, "");
+  }
+  return (import.meta.env.VITE_API_BASE ?? "http://localhost:8000").replace(/\/+$/, "");
+};
 
 export const api = {
   // Dashboard stats
-  getStats: () => fetch(`${BASE}/api/stats`).then(r => r.json()),
+  getStats: () => fetch(`${getBaseUrl()}/api/stats`).then(r => r.json()),
 
   // Video management
-  getVideos: () => fetch(`${BASE}/api/videos`).then(r => r.json()),
-  getKeyframes: (videoId) => fetch(`${BASE}/api/videos/${videoId}/keyframes`).then(r => r.json()),
-  deleteVideo: (videoId) => fetch(`${BASE}/api/videos/${videoId}`, { method: "DELETE" }).then(r => r.json()),
-  stopVideo: (videoId) => fetch(`${BASE}/api/videos/${videoId}/stop`, { method: "POST" }).then(r => r.json()),
+  getVideos: () => fetch(`${getBaseUrl()}/api/videos`).then(r => r.json()),
+  getKeyframes: (videoId) => fetch(`${getBaseUrl()}/api/videos/${videoId}/keyframes`).then(r => r.json()),
+  deleteVideo: (videoId) => fetch(`${getBaseUrl()}/api/videos/${videoId}`, { method: "DELETE" }).then(r => r.json()),
+  stopVideo: (videoId) => fetch(`${getBaseUrl()}/api/videos/${videoId}/stop`, { method: "POST" }).then(r => r.json()),
 
   // Image URLs
-  imageUrl: (imageId) => `${BASE}/api/keyframes/${imageId}/image`,
-  rawImageUrl: (echdId) => `${BASE}/api/dataset/images/${echdId}/raw`,
+  imageUrl: (imageId) => `${getBaseUrl()}/api/keyframes/${imageId}/image`,
+  rawImageUrl: (echdId) => `${getBaseUrl()}/api/dataset/images/${echdId}/raw`,
 
   // Download
-  videoZipUrl: (videoId) => `${BASE}/api/videos/${videoId}/download`,
-  datasetZipUrl: () => `${BASE}/api/download/dataset`,
+  videoZipUrl: (videoId) => `${getBaseUrl()}/api/videos/${videoId}/download`,
+  datasetZipUrl: () => `${getBaseUrl()}/api/download/dataset`,
 
   // Upload
   uploadVideo: (formData) =>
-    fetch(`${BASE}/api/upload/video`, { method: "POST", body: formData }).then(r => r.json()),
+    fetch(`${getBaseUrl()}/api/upload/video`, { method: "POST", body: formData }).then(r => r.json()),
 
   uploadImages: (formData) =>
-    fetch(`${BASE}/api/upload/images`, { method: "POST", body: formData }).then(r => r.json()),
+    fetch(`${getBaseUrl()}/api/upload/images`, { method: "POST", body: formData }).then(r => r.json()),
 
   uploadUrl: (payload) =>
-    fetch(`${BASE}/api/upload/url`, {
+    fetch(`${getBaseUrl()}/api/upload/url`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -36,20 +42,20 @@ export const api = {
 
   // Direct dataset upload (Stage 4)
   datasetUpload: (formData) =>
-    fetch(`${BASE}/dataset/upload`, { method: "POST", body: formData }).then(r => r.json()),
+    fetch(`${getBaseUrl()}/dataset/upload`, { method: "POST", body: formData }).then(r => r.json()),
 
   // Dataset explorer
   getDatasetImages: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
-    return fetch(`${BASE}/api/dataset/images${qs ? "?" + qs : ""}`).then(r => r.json());
+    return fetch(`${getBaseUrl()}/api/dataset/images${qs ? "?" + qs : ""}`).then(r => r.json());
   },
-  getDatasetImage: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}`).then(r => r.json()),
-  deleteDatasetImage: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}`, { method: "DELETE" }).then(r => r.json()),
-  runOcr: (imageId) => fetch(`${BASE}/api/dataset/images/${imageId}/ocr`, { method: "POST" }).then(r => r.json()),
+  getDatasetImage: (imageId) => fetch(`${getBaseUrl()}/api/dataset/images/${imageId}`).then(r => r.json()),
+  deleteDatasetImage: (imageId) => fetch(`${getBaseUrl()}/api/dataset/images/${imageId}`, { method: "DELETE" }).then(r => r.json()),
+  runOcr: (imageId) => fetch(`${getBaseUrl()}/api/dataset/images/${imageId}/ocr`, { method: "POST" }).then(r => r.json()),
 
   // Region detection: proposed boxes + CNN class per region
   detectRegions: (imageId, persist = false) =>
-    fetch(`${BASE}/api/dataset/images/${imageId}/detect?persist=${persist}`, { method: "POST" })
+    fetch(`${getBaseUrl()}/api/dataset/images/${imageId}/detect?persist=${persist}`, { method: "POST" })
       .then(async r => {
         const body = await r.json();
         if (!r.ok) throw new Error(body.detail || "Detection failed");
@@ -59,7 +65,7 @@ export const api = {
   detectUpload: (file) => {
     const form = new FormData();
     form.append("image", file);
-    return fetch(`${BASE}/api/detect/upload`, { method: "POST", body: form })
+    return fetch(`${getBaseUrl()}/api/detect/upload`, { method: "POST", body: form })
       .then(async r => {
         const body = await r.json();
         if (!r.ok) throw new Error(body.detail || "Detection failed");
@@ -67,16 +73,16 @@ export const api = {
       });
   },
   updateAnnotation: (imageId, text, annotationClass = "Text", reviewed = true) =>
-    fetch(`${BASE}/api/dataset/images/${imageId}/annotation`, {
+    fetch(`${getBaseUrl()}/api/dataset/images/${imageId}/annotation`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ annotation_text: text, annotation_class: annotationClass, reviewed }),
     }).then(r => r.json()),
 
   // Dataset versions
-  getVersions: () => fetch(`${BASE}/api/dataset/versions`).then(r => r.json()),
+  getVersions: () => fetch(`${getBaseUrl()}/api/dataset/versions`).then(r => r.json()),
   createVersion: (description) =>
-    fetch(`${BASE}/api/dataset/versions`, {
+    fetch(`${getBaseUrl()}/api/dataset/versions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ description }),

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { api } from "../api";
+import { getPresentationFallback } from "../presentationFallback";
 
 const CLASS_COLORS = {
   Text: "#6B6BFF", Heading: "#4ECDC4", Formula: "#FFD93D",
@@ -41,7 +42,17 @@ export default function DetectPanel() {
     try {
       setResult(await api.detectUpload(file));
     } catch (err) {
-      setError(err.message || "Detection failed");
+      console.warn("Backend API unavailable or blocked, falling back to presentation mode:", err);
+      try {
+        const fallback = await getPresentationFallback(file);
+        if (fallback) {
+          setResult(fallback);
+        } else {
+          setError(err.message || "Detection failed");
+        }
+      } catch (fallbackErr) {
+        setError(err.message || "Detection failed");
+      }
     } finally {
       setLoading(false);
     }

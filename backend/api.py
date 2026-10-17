@@ -79,7 +79,8 @@ app = FastAPI(
 CORS_ORIGINS = [
     origin.strip()
     for origin in os.environ.get(
-        "CORS_ORIGINS", "http://localhost:5173,http://localhost:3000"
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://localhost:3000,https://echoboard-app.vercel.app,http://127.0.0.1:5173",
     ).split(",")
     if origin.strip()
 ]
@@ -87,6 +88,7 @@ CORS_ORIGINS = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.loca\.lt|https://.*\.ngrok-free\.app|https://.*\.ngrok\.io|http://localhost:.*|http://127\.0\.0\.1:.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
